@@ -11,9 +11,22 @@ use ZipArchive;
 final class TransactionWorkbookReader
 {
     private const REQUIRED_HEADERS = ['TGL', 'DATASOURCE', 'TYPE', 'CA_ID', 'CHANNEL_NAME', 'BILLER', 'SIC_CODE', 'RC', 'TOTAL_TRX', 'TOTAL_AMOUNT'];
+    private const MAX_ROWS = 250000;
+    private const MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
 
     /** Membaca dan menormalisasi seluruh baris transaksi dari workbook XLSX tanpa mengubah file. */
     public function readTransactions(string $filePath): array
+    {
+        $inspection = $this->inspectTransactions($filePath);
+        if ($inspection['invalid_rows'] !== []) {
+            $first = $inspection['invalid_rows'][0];
+            throw new RuntimeException("Baris {$first['source_row_number']} tidak valid: {$first['message']}");
+        }
+        return $inspection['rows'];
+    }
+
+    /** Membaca workbook untuk preview dan mengumpulkan error per baris tanpa menghentikan seluruh file. */
+    public function inspectTransactions(string $filePath): array
     {
         $zip = $this->openWorkbook($filePath);
         try {
@@ -21,6 +34,8 @@ final class TransactionWorkbookReader
             $sheet = $this->readXmlEntry($zip, 'xl/worksheets/sheet1.xml');
             $rows = $sheet->sheetData->row ?? [];
             $result = [];
+            $invalidRows = [];
+            $totalRows = 0;
             $headers = [];
             $isHeaderRow = true;
 
@@ -34,12 +49,35 @@ final class TransactionWorkbookReader
                 if ($this->isEmptyRow($values)) {
                     continue;
                 }
-                $result[] = $this->normalizeTransaction($values, $headers, (int) $row['r']);
+                $totalRows++;
+                if ($totalRows > self::MAX_ROWS) {
+                    throw new RuntimeException('Workbook melebihi batas 250.000 baris transaksi.');
+                }
+                try {
+                    $result[] = $this->normalizeTransaction($values, $headers, (int) $row['r']);
+                } catch (RuntimeException $error) {
+                    $invalidRows[] = ['source_row_number' => (int) $row['r'], 'message' => $error->getMessage()];
+                }
             }
-            return $result;
+            return ['rows' => $result, 'invalid_rows' => $invalidRows, 'total_rows' => $totalRows];
         } finally {
             $zip->close();
         }
+    }
+
+    /** Menghasilkan fingerprint stabil dari nilai bisnis dan tidak memasukkan nomor baris sumber. */
+    public function fingerprint(array $row): string
+    {
+        $businessData = $row;
+        unset($businessData['source_row_number']);
+        return hash('sha256', json_encode($businessData, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR));
+    }
+
+    /** Menghasilkan kunci natural stabil untuk mendeteksi benturan dalam satu workbook. */
+    public function naturalKey(array $row): string
+    {
+        $fields = ['transaction_date', 'datasource', 'transaction_type', 'ca_id', 'partner_channel', 'biller', 'sic_code', 'response_code'];
+        return hash('sha256', json_encode(array_intersect_key($row, array_flip($fields)), JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     }
 
     /** Membaca mapping kode payment channel dari sheet kode biller pada workbook referensi. */
@@ -66,15 +104,24 @@ final class TransactionWorkbookReader
         }
     }
 
-    /** Membuka XLSX sebagai ZIP dan menolak file yang tidak dapat dibaca. */
+    /** Membuka file sebagai workbook ZIP; ekstensi nama asli divalidasi pada batas upload atau CLI. */
     private function openWorkbook(string $filePath): ZipArchive
     {
-        if (!is_file($filePath) || strtolower(pathinfo($filePath, PATHINFO_EXTENSION)) !== 'xlsx') {
-            throw new RuntimeException('File XLSX tidak ditemukan atau ekstensi tidak valid.');
+        if (!is_file($filePath)) {
+            throw new RuntimeException('File XLSX tidak ditemukan.');
         }
         $zip = new ZipArchive();
         if ($zip->open($filePath) !== true) {
             throw new RuntimeException('Workbook tidak dapat dibuka.');
+        }
+        $uncompressedBytes = 0;
+        for ($index = 0; $index < $zip->numFiles; $index++) {
+            $entry = $zip->statIndex($index);
+            $uncompressedBytes += (int) ($entry['size'] ?? 0);
+            if ($uncompressedBytes > self::MAX_UNCOMPRESSED_BYTES) {
+                $zip->close();
+                throw new RuntimeException('Isi workbook setelah dekompresi melebihi batas 100 MB.');
+            }
         }
         return $zip;
     }
@@ -154,9 +201,8 @@ final class TransactionWorkbookReader
         if (!$date || ($dateErrors !== false && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0))) {
             throw new RuntimeException("Tanggal tidak valid pada baris {$sourceRow}.");
         }
-        if (!ctype_digit($row['TOTAL_TRX']) || !is_numeric($row['TOTAL_AMOUNT'])) {
-            throw new RuntimeException("Nilai transaksi tidak valid pada baris {$sourceRow}.");
-        }
+        $totalTrx = $this->normalizeWholeNumber($row['TOTAL_TRX'], $sourceRow, 'TOTAL_TRX');
+        $totalAmount = $this->normalizeDecimal($row['TOTAL_AMOUNT'], $sourceRow, 'TOTAL_AMOUNT');
         return [
             'source_row_number' => $sourceRow,
             'transaction_date' => $date->format('Y-m-d'),
@@ -167,9 +213,35 @@ final class TransactionWorkbookReader
             'biller' => $row['BILLER'],
             'sic_code' => $row['SIC_CODE'],
             'response_code' => $row['RC'],
-            'total_trx' => (int) $row['TOTAL_TRX'],
-            'total_amount' => number_format((float) $row['TOTAL_AMOUNT'], 2, '.', ''),
+            'total_trx' => $totalTrx,
+            'total_amount' => $totalAmount,
         ];
+    }
+
+    /** Menormalisasi angka bulat Excel seperti 5 atau 5.0 dan menolak nilai pecahan, negatif, atau non-finite. */
+    private function normalizeWholeNumber(string $value, int $sourceRow, string $field): int
+    {
+        if (!is_numeric($value)) {
+            throw new RuntimeException("{$field} tidak valid pada baris {$sourceRow}.");
+        }
+        $number = (float) $value;
+        if (!is_finite($number) || $number < 0 || floor($number) !== $number || $number > PHP_INT_MAX) {
+            throw new RuntimeException("{$field} harus berupa angka bulat non-negatif pada baris {$sourceRow}.");
+        }
+        return (int) $number;
+    }
+
+    /** Menormalisasi nominal Excel termasuk notasi ilmiah menjadi string desimal dua digit. */
+    private function normalizeDecimal(string $value, int $sourceRow, string $field): string
+    {
+        if (!is_numeric($value)) {
+            throw new RuntimeException("{$field} tidak valid pada baris {$sourceRow}.");
+        }
+        $number = (float) $value;
+        if (!is_finite($number) || $number < 0 || $number >= 1000000000000000000) {
+            throw new RuntimeException("{$field} harus berupa nominal non-negatif dalam batas yang didukung pada baris {$sourceRow}.");
+        }
+        return number_format($number, 2, '.', '');
     }
 
     /** Menemukan path worksheet berdasarkan nama sheet melalui relationship OpenXML. */

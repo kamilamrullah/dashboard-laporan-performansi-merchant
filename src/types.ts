@@ -42,3 +42,52 @@ export interface DashboardData {
   options: DashboardOptions;
 }
 
+export type TransactionImportOutcome = 'READY' | 'CHANGED' | 'DUPLICATE_IN_FILE' | 'DUPLICATE_DATABASE' | 'CONFLICT_IN_FILE' | 'INVALID';
+
+export interface TransactionImportData {
+  source_row_number: number;
+  transaction_date: string;
+  datasource: string;
+  transaction_type: string;
+  ca_id: string;
+  partner_channel: string;
+  biller: string;
+  sic_code: string;
+  response_code: string;
+  total_trx: number;
+  total_amount: string;
+  source_batch_id?: number;
+}
+
+export interface TransactionImportRow {
+  id: number;
+  source_row_number: number;
+  outcome: TransactionImportOutcome;
+  changed_fields: string[];
+  payment_channel: string | null;
+  data: TransactionImportData | null;
+  existing: TransactionImportData | null;
+  errors: { message: string } | null;
+}
+
+export interface TransactionImportPreview {
+  status: 'PREVIEWED';
+  batch_id: number;
+  confirmation_token: string;
+  confirmation_expires_at: string;
+  period_start: string | null;
+  period_end: string | null;
+  summary: { total: number; ready: number; changed: number; duplicate_in_file: number; duplicate_database: number; conflict_in_file: number; invalid: number };
+  rows: TransactionImportRow[];
+  visible_rows: number;
+  rows_truncated: boolean;
+}
+
+export interface TransactionImportResult {
+  status: 'COMPLETED';
+  batch_id: number;
+  inserted: number;
+  updated: number;
+  duplicate: number;
+  rejected: number;
+}

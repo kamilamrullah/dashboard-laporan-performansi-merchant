@@ -9,63 +9,115 @@ use Throwable;
 
 final class TransactionImporter
 {
+    private const NATURAL_KEY_FIELDS = ['transaction_date', 'datasource', 'transaction_type', 'ca_id', 'partner_channel', 'biller', 'sic_code', 'response_code'];
+
+    /** Menyimpan koneksi database dan reader workbook yang digunakan sepanjang proses import. */
     public function __construct(private readonly PDO $database, private readonly TransactionWorkbookReader $reader)
     {
     }
 
-    /** Mengimpor satu workbook transaksi sebagai batch atomik dan mengembalikan statistik hasil. */
-    public function import(string $filePath, string $merchantCode, string $merchantName, ?string $mappingFile = null): array
+    /** Memvalidasi workbook, membandingkannya dengan database, dan menyimpan hasil preview sebagai staging. */
+    public function preview(string $filePath, string $originalFilename, string $merchantCode, string $merchantName): array
     {
+        if (strtolower(pathinfo($originalFilename, PATHINFO_EXTENSION)) !== 'xlsx') {
+            throw new RuntimeException('File transaksi harus berformat XLSX.');
+        }
         $hash = hash_file('sha256', $filePath);
-        if ($hash === false) {
-            throw new RuntimeException('Hash file tidak dapat dihitung.');
+        if ($hash === false) throw new RuntimeException('Hash file tidak dapat dihitung.');
+        $existingBatch = $this->findBatchByHash($hash);
+        $replaceableBatchId = null;
+        if ($existingBatch !== null && $existingBatch['status'] !== 'PREVIEWED') {
+            return ['status' => 'IDENTICAL_FILE', 'batch_id' => (int) $existingBatch['id'], 'batch_status' => $existingBatch['status'], 'message' => 'File identik sudah pernah selesai di-import.'];
         }
-        $existing = $this->findBatchByHash($hash);
-        if ($existing !== null) {
-            if ($mappingFile !== null) {
-                $this->database->beginTransaction();
-                try {
-                    $this->upsertPaymentChannels($this->reader->readPaymentChannels($mappingFile));
-                    $this->database->commit();
-                } catch (Throwable $error) {
-                    $this->database->rollBack();
-                    throw $error;
-                }
-            }
-            return ['status' => 'IDENTICAL_FILE', 'batch_id' => (int) $existing['id'], 'message' => 'File identik sudah pernah diproses.'];
-        }
+        if ($existingBatch !== null) $replaceableBatchId = (int) $existingBatch['id'];
 
-        $rows = $this->reader->readTransactions($filePath);
-        if ($rows === []) {
-            throw new RuntimeException('Workbook tidak memiliki baris transaksi.');
-        }
-        $periodStart = min(array_column($rows, 'transaction_date'));
-        $periodEnd = max(array_column($rows, 'transaction_date'));
-        $stats = ['inserted' => 0, 'updated' => 0, 'duplicate' => 0, 'rejected' => 0];
+        $inspection = $this->reader->inspectTransactions($filePath);
+        if ($inspection['total_rows'] === 0) throw new RuntimeException('Workbook tidak memiliki baris transaksi.');
+        $token = bin2hex(random_bytes(32));
+        $rows = $inspection['rows'];
+        $periodStart = $rows === [] ? null : min(array_column($rows, 'transaction_date'));
+        $periodEnd = $rows === [] ? null : max(array_column($rows, 'transaction_date'));
 
         $this->database->beginTransaction();
         try {
+            if ($replaceableBatchId !== null) $this->deleteReplaceablePreview($replaceableBatchId, $hash);
             $merchantId = $this->upsertMerchant($merchantCode, $merchantName);
-            $batchId = $this->createBatch($merchantId, $filePath, $hash, $periodStart, $periodEnd, count($rows));
-            if ($mappingFile !== null) {
-                $this->upsertPaymentChannels($this->reader->readPaymentChannels($mappingFile));
-            }
-            foreach ($rows as $row) {
-                $outcome = $this->persistTransaction($merchantId, $batchId, $row);
-                $stats[strtolower($outcome)]++;
-            }
-            $this->completeBatch($batchId, count($rows), $stats);
+            $batchId = $this->createPreviewBatch($merchantId, $originalFilename, $hash, $periodStart, $periodEnd, (int) $inspection['total_rows'], hash('sha256', $token));
+            $previewRows = $this->stageRows($batchId, $merchantId, $rows, $inspection['invalid_rows']);
+            $summary = $this->summarizePreview($previewRows);
+            $this->updatePreviewBatch($batchId, count($rows), $summary);
             $this->database->commit();
-            return ['status' => 'COMPLETED', 'batch_id' => $batchId, 'period_start' => $periodStart, 'period_end' => $periodEnd, ...$stats];
+            usort($previewRows, static fn (array $left, array $right): int => [self::outcomePriority($left['outcome']), $left['source_row_number']] <=> [self::outcomePriority($right['outcome']), $right['source_row_number']]);
+            $visibleRows = array_slice($previewRows, 0, 500);
+            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'rows' => $visibleRows, 'visible_rows' => count($visibleRows), 'rows_truncated' => count($previewRows) > count($visibleRows)];
         } catch (Throwable $error) {
-            if ($this->database->inTransaction()) {
-                $this->database->rollBack();
-            }
+            if ($this->database->inTransaction()) $this->database->rollBack();
             throw $error;
         }
     }
 
-    /** Mencari batch sebelumnya berdasarkan hash file SHA-256. */
+    /** Mengonfirmasi batch preview dan menerapkan insert serta perubahan yang secara eksplisit disetujui. */
+    public function confirm(int $batchId, string $token, bool $updateChangedRows, ?string $confirmedBy = null): array
+    {
+        $this->database->beginTransaction();
+        try {
+            $batch = $this->lockPreviewBatch($batchId);
+            $this->validateConfirmation($batch, $token);
+            $this->markBatchProcessing($batchId, $confirmedBy);
+            $rows = $this->loadStagedRows($batchId);
+            $stats = ['inserted' => 0, 'updated' => 0, 'duplicate' => 0, 'rejected' => 0];
+            foreach ($rows as $stagedRow) {
+                $outcome = (string) $stagedRow['outcome'];
+                if ($outcome === 'READY') {
+                    $result = $this->insertReadyRow((int) $batch['merchant_id'], $batchId, $stagedRow);
+                } elseif ($outcome === 'CHANGED' && $updateChangedRows) {
+                    $result = $this->updateChangedRow((int) $batch['merchant_id'], $batchId, $stagedRow, $confirmedBy);
+                } elseif ($outcome === 'CHANGED') {
+                    $result = 'SKIPPED_CHANGE';
+                    $this->updateStagedOutcome((int) $stagedRow['id'], $result, $stagedRow['transaction_id'] === null ? null : (int) $stagedRow['transaction_id']);
+                } else {
+                    $result = $outcome;
+                }
+                $this->incrementStats($stats, $result);
+            }
+            $this->completeBatch($batchId, $stats);
+            $this->database->commit();
+            return ['status' => 'COMPLETED', 'batch_id' => $batchId, ...$stats];
+        } catch (Throwable $error) {
+            if ($this->database->inTransaction()) $this->database->rollBack();
+            throw $error;
+        }
+    }
+
+    /** Menyediakan kompatibilitas CLI lama dengan preview lalu konfirmasi tanpa mengganti konflik. */
+    public function import(string $filePath, string $merchantCode, string $merchantName, ?string $mappingFile = null): array
+    {
+        if ($mappingFile !== null) {
+            $mapping = $this->reader->readPaymentChannels($mappingFile);
+            $this->database->beginTransaction();
+            try {
+                $this->upsertPaymentChannels($mapping);
+                $this->database->commit();
+            } catch (Throwable $error) {
+                if ($this->database->inTransaction()) $this->database->rollBack();
+                throw $error;
+            }
+        }
+        $preview = $this->preview($filePath, basename($filePath), $merchantCode, $merchantName);
+        if ($preview['status'] !== 'PREVIEWED') return $preview;
+        return $this->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, 'CLI');
+    }
+
+    /** Menyimpan mapping SIC code secara idempotent untuk mempertahankan kompatibilitas import CLI. */
+    private function upsertPaymentChannels(array $mapping): void
+    {
+        $statement = $this->database->prepare('INSERT INTO payment_channels (sic_code, channel_name) VALUES (:code, :name) ON DUPLICATE KEY UPDATE channel_name = VALUES(channel_name), is_active = 1');
+        foreach ($mapping as $code => $name) {
+            $statement->execute(['code' => (string) $code, 'name' => trim((string) $name)]);
+        }
+    }
+
+    /** Mencari batch berdasarkan hash untuk mencegah pemrosesan file identik. */
     private function findBatchByHash(string $hash): ?array
     {
         $statement = $this->database->prepare('SELECT id, status FROM import_batches WHERE file_sha256 = :hash LIMIT 1');
@@ -74,111 +126,243 @@ final class TransactionImporter
         return $result === false ? null : $result;
     }
 
-    /** Membuat atau memperbarui merchant dan mengembalikan primary key-nya. */
+    /** Menghapus preview lama tanpa transaksi aktif agar file yang belum dikonfirmasi dapat diproses ulang. */
+    private function deleteReplaceablePreview(int $batchId, string $hash): void
+    {
+        $statement = $this->database->prepare(
+            "DELETE FROM import_batches
+             WHERE id = :id AND file_sha256 = :hash AND status = 'PREVIEWED'
+               AND NOT EXISTS (SELECT 1 FROM transaction_aggregates WHERE source_batch_id = :transaction_batch_id)"
+        );
+        $statement->execute(['id' => $batchId, 'hash' => $hash, 'transaction_batch_id' => $batchId]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('Preview lama sedang diproses atau sudah memiliki transaksi aktif. Muat ulang status import.');
+        }
+    }
+
+    /** Membuat atau memperbarui master merchant dan mengembalikan ID-nya. */
     private function upsertMerchant(string $code, string $name): int
     {
-        $statement = $this->database->prepare(
-            'INSERT INTO merchants (merchant_code, merchant_name) VALUES (:code, :name)
-             ON DUPLICATE KEY UPDATE merchant_name = VALUES(merchant_name), id = LAST_INSERT_ID(id)'
-        );
-        $statement->execute(['code' => trim($code), 'name' => trim($name)]);
+        $code = trim($code); $name = trim($name);
+        if ($code === '' || $name === '' || mb_strlen($code) > 64 || mb_strlen($name) > 160) throw new RuntimeException('Kode atau nama merchant tidak valid.');
+        $statement = $this->database->prepare('INSERT INTO merchants (merchant_code, merchant_name) VALUES (:code, :name) ON DUPLICATE KEY UPDATE merchant_name = VALUES(merchant_name), id = LAST_INSERT_ID(id)');
+        $statement->execute(['code' => $code, 'name' => $name]);
         return (int) $this->database->lastInsertId();
     }
 
-    /** Membuat metadata batch sebelum baris transaksi disimpan. */
-    private function createBatch(int $merchantId, string $filePath, string $hash, string $start, string $end, int $rowCount): int
+    /** Membuat batch berstatus preview dengan token konfirmasi yang sudah di-hash. */
+    private function createPreviewBatch(int $merchantId, string $filename, string $hash, ?string $start, ?string $end, int $totalRows, string $tokenHash): int
     {
-        $statement = $this->database->prepare(
-            "INSERT INTO import_batches
-             (merchant_id, data_type, original_filename, file_sha256, detected_period_start, detected_period_end, total_rows, valid_rows, status, confirmed_at)
-             VALUES (:merchant_id, 'TRANSACTION', :filename, :hash, :period_start, :period_end, :total_rows, :valid_rows, 'PROCESSING', NOW())"
-        );
-        $statement->execute([
-            'merchant_id' => $merchantId,
-            'filename' => basename($filePath),
-            'hash' => $hash,
-            'period_start' => $start,
-            'period_end' => $end,
-            'total_rows' => $rowCount,
-            'valid_rows' => $rowCount,
-        ]);
+        $safeFilename = mb_substr(basename(str_replace('\\', '/', $filename)), 0, 255);
+        $statement = $this->database->prepare("INSERT INTO import_batches (merchant_id, data_type, original_filename, file_sha256, detected_period_start, detected_period_end, total_rows, status, confirmation_token_hash, confirmation_expires_at) VALUES (:merchant_id, 'TRANSACTION', :filename, :hash, :period_start, :period_end, :total_rows, 'PREVIEWED', :token_hash, DATE_ADD(NOW(), INTERVAL 24 HOUR))");
+        $statement->execute(['merchant_id' => $merchantId, 'filename' => $safeFilename, 'hash' => $hash, 'period_start' => $start, 'period_end' => $end, 'total_rows' => $totalRows, 'token_hash' => $tokenHash]);
         return (int) $this->database->lastInsertId();
     }
 
-    /** Menyimpan mapping SIC code secara idempotent tanpa menebak mapping tambahan. */
-    private function upsertPaymentChannels(array $mapping): void
+    /** Mengklasifikasikan dan menyimpan seluruh baris valid maupun invalid untuk preview. */
+    private function stageRows(int $batchId, int $merchantId, array $rows, array $invalidRows): array
     {
-        $statement = $this->database->prepare(
-            'INSERT INTO payment_channels (sic_code, channel_name) VALUES (:code, :name)
-             ON DUPLICATE KEY UPDATE channel_name = VALUES(channel_name), is_active = 1'
-        );
-        foreach ($mapping as $code => $name) {
-            $statement->execute(['code' => $code, 'name' => trim((string) $name)]);
+        $preview = []; $seenFingerprints = []; $seenNaturalKeys = []; $paymentChannels = $this->loadPaymentChannels();
+        foreach ($rows as $row) {
+            $fingerprint = $this->reader->fingerprint($row); $naturalKey = $this->reader->naturalKey($row); $existing = null;
+            if (isset($seenFingerprints[$fingerprint])) $outcome = 'DUPLICATE_IN_FILE';
+            elseif (isset($seenNaturalKeys[$naturalKey])) $outcome = 'CONFLICT_IN_FILE';
+            else {
+                $existing = $this->findTransaction($merchantId, $row, false);
+                $outcome = $existing === null ? 'READY' : ($this->hasSameTotals($existing, $row) ? 'DUPLICATE_DATABASE' : 'CHANGED');
+            }
+            $seenFingerprints[$fingerprint] = true; $seenNaturalKeys[$naturalKey] = true;
+            $transactionId = $existing === null ? null : (int) $existing['id'];
+            $id = $this->insertStagedRow($batchId, $row['source_row_number'], $transactionId, $fingerprint, $outcome, null, $row, $existing);
+            $preview[] = $this->previewPayload($id, $row['source_row_number'], $outcome, $row, $existing, null, $paymentChannels[$row['sic_code']] ?? null);
         }
-    }
-
-    /** Menyimpan, memperbarui, atau menandai duplikat berdasarkan natural key transaksi. */
-    private function persistTransaction(int $merchantId, int $batchId, array $row): string
-    {
-        $lookup = $this->database->prepare(
-            'SELECT id, total_trx, total_amount FROM transaction_aggregates
-             WHERE merchant_id = :merchant_id AND transaction_date = :transaction_date AND datasource = :datasource AND transaction_type = :transaction_type
-               AND ca_id = :ca_id AND partner_channel = :partner_channel AND biller = :biller
-               AND sic_code = :sic_code AND response_code = :response_code LIMIT 1'
-        );
-        $naturalKey = array_intersect_key($row, array_flip(['transaction_date', 'datasource', 'transaction_type', 'ca_id', 'partner_channel', 'biller', 'sic_code', 'response_code']));
-        $lookup->execute([...$naturalKey, 'merchant_id' => $merchantId]);
-        $existing = $lookup->fetch();
-
-        if ($existing === false) {
-            $statement = $this->database->prepare(
-                'INSERT INTO transaction_aggregates
-                 (merchant_id, transaction_date, datasource, transaction_type, ca_id, partner_channel, biller, sic_code, response_code, total_trx, total_amount, source_batch_id, source_row_number)
-                 VALUES (:merchant_id, :transaction_date, :datasource, :transaction_type, :ca_id, :partner_channel, :biller, :sic_code, :response_code, :total_trx, :total_amount, :batch_id, :source_row_number)'
-            );
-            $statement->execute([...$row, 'merchant_id' => $merchantId, 'batch_id' => $batchId]);
-            $transactionId = (int) $this->database->lastInsertId();
-            $outcome = 'INSERTED';
-        } elseif ((int) $existing['total_trx'] === $row['total_trx'] && number_format((float) $existing['total_amount'], 2, '.', '') === $row['total_amount']) {
-            $transactionId = (int) $existing['id'];
-            $outcome = 'DUPLICATE';
-        } else {
-            $statement = $this->database->prepare(
-                'UPDATE transaction_aggregates SET total_trx = :total_trx, total_amount = :total_amount,
-                 merchant_id = :merchant_id, source_batch_id = :batch_id, source_row_number = :source_row_number WHERE id = :id'
-            );
-            $statement->execute([
-                'total_trx' => $row['total_trx'], 'total_amount' => $row['total_amount'], 'merchant_id' => $merchantId,
-                'batch_id' => $batchId, 'source_row_number' => $row['source_row_number'], 'id' => $existing['id'],
-            ]);
-            $transactionId = (int) $existing['id'];
-            $outcome = 'UPDATED';
+        foreach ($invalidRows as $invalid) {
+            $errors = ['message' => $invalid['message']];
+            $id = $this->insertStagedRow($batchId, $invalid['source_row_number'], null, hash('sha256', $invalid['source_row_number'] . '|' . $invalid['message']), 'INVALID', $errors, null, null);
+            $preview[] = $this->previewPayload($id, $invalid['source_row_number'], 'INVALID', null, null, $errors, null);
         }
-        $this->recordAuditRow($batchId, $transactionId, $row, $outcome);
-        return $outcome;
+        return $preview;
     }
 
-    /** Mencatat fingerprint, nomor sumber, target, dan hasil pemrosesan satu baris. */
-    private function recordAuditRow(int $batchId, int $transactionId, array $row, string $outcome): void
+    /** Memuat seluruh mapping SIC code ke nama payment channel untuk memperkaya hasil preview. */
+    private function loadPaymentChannels(): array
     {
-        $fingerprint = hash('sha256', json_encode($row, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION));
-        $statement = $this->database->prepare(
-            'INSERT INTO transaction_import_rows (batch_id, source_row_number, transaction_id, row_fingerprint, outcome)
-             VALUES (:batch_id, :source_row_number, :transaction_id, :fingerprint, :outcome)'
-        );
-        $statement->execute([
-            'batch_id' => $batchId, 'source_row_number' => $row['source_row_number'], 'transaction_id' => $transactionId,
-            'fingerprint' => $fingerprint, 'outcome' => $outcome,
-        ]);
+        $statement = $this->database->query('SELECT sic_code, channel_name FROM payment_channels WHERE is_active = 1');
+        $mapping = [];
+        foreach ($statement->fetchAll() as $channel) {
+            $mapping[(string) $channel['sic_code']] = (string) $channel['channel_name'];
+        }
+        return $mapping;
     }
 
-    /** Menandai batch selesai dan menyimpan seluruh statistik import. */
-    private function completeBatch(int $batchId, int $validRows, array $stats): void
+    /** Menyimpan satu hasil staging dan mengembalikan ID audit-nya. */
+    private function insertStagedRow(int $batchId, int $sourceRow, ?int $transactionId, string $fingerprint, string $outcome, ?array $errors, ?array $normalized, ?array $existing): int
     {
-        $statement = $this->database->prepare(
-            "UPDATE import_batches SET valid_rows = :valid_rows, inserted_rows = :inserted, updated_rows = :updated,
-             duplicate_rows = :duplicate, rejected_rows = :rejected, status = 'COMPLETED', completed_at = NOW() WHERE id = :id"
-        );
-        $statement->execute([...$stats, 'valid_rows' => $validRows, 'id' => $batchId]);
+        $statement = $this->database->prepare('INSERT INTO transaction_import_rows (batch_id, source_row_number, transaction_id, row_fingerprint, outcome, validation_errors, normalized_data, existing_data) VALUES (:batch_id, :source_row, :transaction_id, :fingerprint, :outcome, :errors, :normalized, :existing)');
+        $statement->execute(['batch_id' => $batchId, 'source_row' => $sourceRow, 'transaction_id' => $transactionId, 'fingerprint' => $fingerprint, 'outcome' => $outcome, 'errors' => $errors === null ? null : $this->encodeJson($errors), 'normalized' => $normalized === null ? null : $this->encodeJson($normalized), 'existing' => $existing === null ? null : $this->encodeJson($this->transactionSnapshot($existing))]);
+        return (int) $this->database->lastInsertId();
+    }
+
+    /** Mencari transaksi berdasarkan natural key, opsional dengan row lock saat konfirmasi. */
+    private function findTransaction(int $merchantId, array $row, bool $forUpdate): ?array
+    {
+        $statement = $this->database->prepare('SELECT id, transaction_date, datasource, transaction_type, ca_id, partner_channel, biller, sic_code, response_code, total_trx, total_amount, source_batch_id, source_row_number FROM transaction_aggregates WHERE merchant_id = :merchant_id AND transaction_date = :transaction_date AND datasource = :datasource AND transaction_type = :transaction_type AND ca_id = :ca_id AND partner_channel = :partner_channel AND biller = :biller AND sic_code = :sic_code AND response_code = :response_code LIMIT 1' . ($forUpdate ? ' FOR UPDATE' : ''));
+        $parameters = ['merchant_id' => $merchantId];
+        foreach (self::NATURAL_KEY_FIELDS as $field) $parameters[$field] = $row[$field];
+        $statement->execute($parameters); $result = $statement->fetch();
+        return $result === false ? null : $result;
+    }
+
+    /** Menentukan apakah nilai transaksi existing sama dengan nilai dari workbook. */
+    private function hasSameTotals(array $existing, array $row): bool
+    {
+        return (int) $existing['total_trx'] === (int) $row['total_trx'] && number_format((float) $existing['total_amount'], 2, '.', '') === (string) $row['total_amount'];
+    }
+
+    /** Menyusun ringkasan jumlah status preview untuk ditampilkan oleh klien. */
+    private function summarizePreview(array $rows): array
+    {
+        $summary = ['total' => count($rows), 'ready' => 0, 'changed' => 0, 'duplicate_in_file' => 0, 'duplicate_database' => 0, 'conflict_in_file' => 0, 'invalid' => 0];
+        foreach ($rows as $row) { $key = strtolower((string) $row['outcome']); if (array_key_exists($key, $summary)) $summary[$key]++; }
+        return $summary;
+    }
+
+    /** Memperbarui statistik batch setelah semua baris preview tersimpan. */
+    private function updatePreviewBatch(int $batchId, int $validRows, array $summary): void
+    {
+        $statement = $this->database->prepare('UPDATE import_batches SET valid_rows = :valid_rows, duplicate_rows = :duplicates, rejected_rows = :rejected WHERE id = :id');
+        $statement->execute(['valid_rows' => $validRows, 'duplicates' => $summary['duplicate_in_file'] + $summary['duplicate_database'], 'rejected' => $summary['invalid'] + $summary['conflict_in_file'], 'id' => $batchId]);
+    }
+
+    /** Mengunci batch agar konfirmasi ganda atau bersamaan tidak dapat diproses. */
+    private function lockPreviewBatch(int $batchId): array
+    {
+        $statement = $this->database->prepare('SELECT id, merchant_id, status, confirmation_token_hash, confirmation_expires_at FROM import_batches WHERE id = :id FOR UPDATE');
+        $statement->execute(['id' => $batchId]); $batch = $statement->fetch();
+        if ($batch === false) throw new RuntimeException('Batch import tidak ditemukan.');
+        return $batch;
+    }
+
+    /** Memvalidasi status, masa berlaku, dan token rahasia batch konfirmasi. */
+    private function validateConfirmation(array $batch, string $token): void
+    {
+        if ($batch['status'] !== 'PREVIEWED') throw new RuntimeException('Batch tidak lagi dapat dikonfirmasi.');
+        if ($batch['confirmation_expires_at'] === null || strtotime((string) $batch['confirmation_expires_at']) < time()) throw new RuntimeException('Masa berlaku preview sudah berakhir. Upload ulang file untuk membuat preview baru.');
+        if ($token === '' || !hash_equals((string) $batch['confirmation_token_hash'], hash('sha256', $token))) throw new RuntimeException('Token konfirmasi tidak valid.');
+    }
+
+    /** Menandai batch sedang diproses dan menghapus token agar tidak dapat digunakan ulang. */
+    private function markBatchProcessing(int $batchId, ?string $confirmedBy): void
+    {
+        $statement = $this->database->prepare("UPDATE import_batches SET status = 'PROCESSING', confirmed_at = NOW(), imported_by = :confirmed_by, confirmation_token_hash = NULL, confirmation_expires_at = NULL WHERE id = :id");
+        $statement->execute(['confirmed_by' => $confirmedBy, 'id' => $batchId]);
+    }
+
+    /** Memuat staging dalam urutan nomor baris untuk pemrosesan deterministik. */
+    private function loadStagedRows(int $batchId): array
+    {
+        $statement = $this->database->prepare('SELECT id, source_row_number, transaction_id, outcome, normalized_data, existing_data FROM transaction_import_rows WHERE batch_id = :batch_id ORDER BY source_row_number FOR UPDATE');
+        $statement->execute(['batch_id' => $batchId]); return $statement->fetchAll();
+    }
+
+    /** Memasukkan baris READY dan mengecek ulang database untuk menghadapi import bersamaan. */
+    private function insertReadyRow(int $merchantId, int $batchId, array $stagedRow): string
+    {
+        $row = $this->decodeJson((string) $stagedRow['normalized_data']); $existing = $this->findTransaction($merchantId, $row, true);
+        if ($existing !== null) {
+            $outcome = $this->hasSameTotals($existing, $row) ? 'DUPLICATE_DATABASE' : 'STALE_CONFLICT';
+            $this->updateStagedOutcome((int) $stagedRow['id'], $outcome, (int) $existing['id']); return $outcome;
+        }
+        $statement = $this->database->prepare('INSERT INTO transaction_aggregates (merchant_id, transaction_date, datasource, transaction_type, ca_id, partner_channel, biller, sic_code, response_code, total_trx, total_amount, source_batch_id, source_row_number) VALUES (:merchant_id, :transaction_date, :datasource, :transaction_type, :ca_id, :partner_channel, :biller, :sic_code, :response_code, :total_trx, :total_amount, :batch_id, :source_row_number)');
+        $statement->execute([...$row, 'merchant_id' => $merchantId, 'batch_id' => $batchId]);
+        $transactionId = (int) $this->database->lastInsertId(); $this->updateStagedOutcome((int) $stagedRow['id'], 'INSERTED', $transactionId);
+        return 'INSERTED';
+    }
+
+    /** Memperbarui konflik yang disetujui setelah memastikan data tidak berubah sejak preview. */
+    private function updateChangedRow(int $merchantId, int $batchId, array $stagedRow, ?string $confirmedBy): string
+    {
+        $row = $this->decodeJson((string) $stagedRow['normalized_data']); $previewExisting = $this->decodeJson((string) $stagedRow['existing_data']);
+        $current = $this->findTransaction($merchantId, $row, true);
+        if ($current === null || $this->transactionSnapshot($current) !== $previewExisting) {
+            $this->updateStagedOutcome((int) $stagedRow['id'], 'STALE_CONFLICT', $current === null ? null : (int) $current['id']); return 'STALE_CONFLICT';
+        }
+        $statement = $this->database->prepare('UPDATE transaction_aggregates SET total_trx = :total_trx, total_amount = :total_amount, source_batch_id = :batch_id, source_row_number = :source_row_number WHERE id = :id');
+        $statement->execute(['total_trx' => $row['total_trx'], 'total_amount' => $row['total_amount'], 'batch_id' => $batchId, 'source_row_number' => $row['source_row_number'], 'id' => $current['id']]);
+        $this->recordChangeHistory((int) $current['id'], $batchId, (int) $row['source_row_number'], $previewExisting, $row, $confirmedBy);
+        $this->updateStagedOutcome((int) $stagedRow['id'], 'UPDATED', (int) $current['id']); return 'UPDATED';
+    }
+
+    /** Menyimpan snapshot sebelum dan sesudah untuk audit perubahan transaksi. */
+    private function recordChangeHistory(int $transactionId, int $batchId, int $sourceRow, array $oldData, array $newData, ?string $confirmedBy): void
+    {
+        $statement = $this->database->prepare('INSERT INTO transaction_change_history (transaction_id, batch_id, source_row_number, old_data, new_data, confirmed_by) VALUES (:transaction_id, :batch_id, :source_row, :old_data, :new_data, :confirmed_by)');
+        $statement->execute(['transaction_id' => $transactionId, 'batch_id' => $batchId, 'source_row' => $sourceRow, 'old_data' => $this->encodeJson($oldData), 'new_data' => $this->encodeJson($newData), 'confirmed_by' => $confirmedBy]);
+    }
+
+    /** Memperbarui hasil akhir satu baris staging dan target transaksinya. */
+    private function updateStagedOutcome(int $stagedId, string $outcome, ?int $transactionId): void
+    {
+        $statement = $this->database->prepare('UPDATE transaction_import_rows SET outcome = :outcome, transaction_id = :transaction_id WHERE id = :id');
+        $statement->execute(['outcome' => $outcome, 'transaction_id' => $transactionId, 'id' => $stagedId]);
+    }
+
+    /** Mengelompokkan outcome akhir ke statistik batch. */
+    private function incrementStats(array &$stats, string $outcome): void
+    {
+        if ($outcome === 'INSERTED') $stats['inserted']++;
+        elseif ($outcome === 'UPDATED') $stats['updated']++;
+        elseif (str_starts_with($outcome, 'DUPLICATE')) $stats['duplicate']++;
+        else $stats['rejected']++;
+    }
+
+    /** Menandai batch selesai dan menyimpan statistik final tanpa menyimpan token lagi. */
+    private function completeBatch(int $batchId, array $stats): void
+    {
+        $statement = $this->database->prepare("UPDATE import_batches SET inserted_rows = :inserted, updated_rows = :updated, duplicate_rows = :duplicate, rejected_rows = :rejected, status = 'COMPLETED', completed_at = NOW() WHERE id = :id");
+        $statement->execute([...$stats, 'id' => $batchId]);
+    }
+
+    /** Mengambil snapshot kolom yang harus tetap sama antara preview dan konfirmasi. */
+    private function transactionSnapshot(array $row): array
+    {
+        $fields = [...self::NATURAL_KEY_FIELDS, 'total_trx', 'total_amount', 'source_batch_id', 'source_row_number'];
+        $snapshot = array_intersect_key($row, array_flip($fields));
+        $snapshot['total_trx'] = (int) $snapshot['total_trx']; $snapshot['total_amount'] = number_format((float) $snapshot['total_amount'], 2, '.', '');
+        $snapshot['source_batch_id'] = (int) $snapshot['source_batch_id']; $snapshot['source_row_number'] = (int) $snapshot['source_row_number'];
+        return $snapshot;
+    }
+
+    /** Menyusun payload aman yang dibutuhkan UI untuk menampilkan preview dan perubahan. */
+    private function previewPayload(int $id, int $sourceRow, string $outcome, ?array $normalized, ?array $existing, ?array $errors, ?string $paymentChannel): array
+    {
+        $changedFields = [];
+        if ($outcome === 'CHANGED' && $normalized !== null && $existing !== null) {
+            foreach (['total_trx', 'total_amount'] as $field) {
+                $old = $field === 'total_trx' ? (int) $existing[$field] : number_format((float) $existing[$field], 2, '.', '');
+                if ((string) $old !== (string) $normalized[$field]) $changedFields[] = $field;
+            }
+        }
+        return ['id' => $id, 'source_row_number' => $sourceRow, 'outcome' => $outcome, 'changed_fields' => $changedFields, 'payment_channel' => $paymentChannel, 'data' => $normalized, 'existing' => $existing === null ? null : $this->transactionSnapshot($existing), 'errors' => $errors];
+    }
+
+    /** Menentukan urutan preview agar perubahan dan masalah muncul sebelum baris siap. */
+    private static function outcomePriority(string $outcome): int
+    {
+        return match ($outcome) { 'CHANGED' => 0, 'INVALID', 'CONFLICT_IN_FILE' => 1, 'DUPLICATE_IN_FILE', 'DUPLICATE_DATABASE' => 2, default => 3 };
+    }
+
+    /** Mengubah array menjadi JSON dengan kegagalan eksplisit. */
+    private function encodeJson(array $value): string
+    {
+        return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR);
+    }
+
+    /** Mengubah JSON staging menjadi array dan menolak payload rusak. */
+    private function decodeJson(string $value): array
+    {
+        $decoded = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($decoded)) throw new RuntimeException('Data staging tidak valid.');
+        return $decoded;
     }
 }

@@ -21,12 +21,13 @@ CREATE TABLE IF NOT EXISTS merchants (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_merchants_code (merchant_code)
+  UNIQUE KEY uq_merchants_code (merchant_code),
+  UNIQUE KEY uq_merchants_name (merchant_name)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS import_batches (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  merchant_id BIGINT UNSIGNED NULL,
+  merchant_id BIGINT UNSIGNED NULL COMMENT 'FK -> merchants.id',
   data_type VARCHAR(32) NOT NULL,
   original_filename VARCHAR(255) NOT NULL,
   file_sha256 CHAR(64) NOT NULL,
@@ -40,6 +41,8 @@ CREATE TABLE IF NOT EXISTS import_batches (
   rejected_rows INT UNSIGNED NOT NULL DEFAULT 0,
   status VARCHAR(24) NOT NULL DEFAULT 'UPLOADED',
   failure_message VARCHAR(1000) NULL,
+  confirmation_token_hash CHAR(64) NULL,
+  confirmation_expires_at DATETIME NULL,
   imported_by VARCHAR(100) NULL,
   confirmed_at DATETIME NULL,
   completed_at DATETIME NULL,
@@ -56,7 +59,7 @@ CREATE TABLE IF NOT EXISTS payment_channels (
   sic_code VARCHAR(32) NOT NULL,
   channel_name VARCHAR(160) NOT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
-  source_batch_id BIGINT UNSIGNED NULL,
+  source_batch_id BIGINT UNSIGNED NULL COMMENT 'FK -> import_batches.id',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (sic_code),
@@ -82,7 +85,7 @@ CREATE TABLE IF NOT EXISTS response_code_rules (
 
 CREATE TABLE IF NOT EXISTS transaction_aggregates (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  merchant_id BIGINT UNSIGNED NOT NULL,
+  merchant_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> merchants.id',
   transaction_date DATE NOT NULL,
   datasource VARCHAR(100) NOT NULL DEFAULT '',
   transaction_type VARCHAR(64) NOT NULL DEFAULT '',
@@ -93,7 +96,7 @@ CREATE TABLE IF NOT EXISTS transaction_aggregates (
   response_code VARCHAR(32) NOT NULL DEFAULT '',
   total_trx BIGINT UNSIGNED NOT NULL,
   total_amount DECIMAL(20,2) NOT NULL,
-  source_batch_id BIGINT UNSIGNED NOT NULL,
+  source_batch_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> import_batches.id',
   source_row_number INT UNSIGNED NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -113,12 +116,14 @@ CREATE TABLE IF NOT EXISTS transaction_aggregates (
 
 CREATE TABLE IF NOT EXISTS transaction_import_rows (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  batch_id BIGINT UNSIGNED NOT NULL,
+  batch_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> import_batches.id',
   source_row_number INT UNSIGNED NOT NULL,
-  transaction_id BIGINT UNSIGNED NULL,
+  transaction_id BIGINT UNSIGNED NULL COMMENT 'FK -> transaction_aggregates.id',
   row_fingerprint CHAR(64) NOT NULL,
   outcome VARCHAR(24) NOT NULL,
   validation_errors JSON NULL,
+  normalized_data JSON NULL,
+  existing_data JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_transaction_import_source (batch_id, source_row_number),
@@ -128,9 +133,25 @@ CREATE TABLE IF NOT EXISTS transaction_import_rows (
   CONSTRAINT fk_transaction_import_target FOREIGN KEY (transaction_id) REFERENCES transaction_aggregates (id)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS transaction_change_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  transaction_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> transaction_aggregates.id',
+  batch_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> import_batches.id',
+  source_row_number INT UNSIGNED NOT NULL,
+  old_data JSON NOT NULL,
+  new_data JSON NOT NULL,
+  confirmed_by VARCHAR(100) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_transaction_history_target (transaction_id, created_at),
+  KEY idx_transaction_history_batch (batch_id),
+  CONSTRAINT fk_transaction_history_target FOREIGN KEY (transaction_id) REFERENCES transaction_aggregates (id),
+  CONSTRAINT fk_transaction_history_batch FOREIGN KEY (batch_id) REFERENCES import_batches (id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS complaint_tickets (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  merchant_id BIGINT UNSIGNED NULL,
+  merchant_id BIGINT UNSIGNED NULL COMMENT 'FK -> merchants.id',
   ticket_number VARCHAR(100) NOT NULL,
   status VARCHAR(64) NOT NULL DEFAULT '',
   product VARCHAR(160) NOT NULL DEFAULT '',
@@ -144,7 +165,7 @@ CREATE TABLE IF NOT EXISTS complaint_tickets (
   type_description VARCHAR(160) NOT NULL DEFAULT '',
   classification_flag VARCHAR(64) NOT NULL DEFAULT '',
   responsible_unit VARCHAR(160) NOT NULL DEFAULT '',
-  source_batch_id BIGINT UNSIGNED NOT NULL,
+  source_batch_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> import_batches.id',
   source_row_number INT UNSIGNED NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -161,9 +182,9 @@ CREATE TABLE IF NOT EXISTS complaint_tickets (
 
 CREATE TABLE IF NOT EXISTS ticket_import_rows (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  batch_id BIGINT UNSIGNED NOT NULL,
+  batch_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> import_batches.id',
   source_row_number INT UNSIGNED NOT NULL,
-  ticket_id BIGINT UNSIGNED NULL,
+  ticket_id BIGINT UNSIGNED NULL COMMENT 'FK -> complaint_tickets.id',
   row_fingerprint CHAR(64) NOT NULL,
   outcome VARCHAR(24) NOT NULL,
   validation_errors JSON NULL,
@@ -178,7 +199,7 @@ CREATE TABLE IF NOT EXISTS ticket_import_rows (
 
 CREATE TABLE IF NOT EXISTS incidents (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  merchant_id BIGINT UNSIGNED NULL,
+  merchant_id BIGINT UNSIGNED NULL COMMENT 'FK -> merchants.id',
   report_period DATE NOT NULL,
   incident_date DATETIME NULL,
   title VARCHAR(255) NOT NULL,
@@ -187,7 +208,7 @@ CREATE TABLE IF NOT EXISTS incidents (
   root_cause TEXT NULL,
   follow_up TEXT NULL,
   source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL',
-  source_ticket_id BIGINT UNSIGNED NULL,
+  source_ticket_id BIGINT UNSIGNED NULL COMMENT 'FK -> complaint_tickets.id',
   created_by VARCHAR(100) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -199,7 +220,7 @@ CREATE TABLE IF NOT EXISTS incidents (
 
 CREATE TABLE IF NOT EXISTS report_runs (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  merchant_id BIGINT UNSIGNED NULL,
+  merchant_id BIGINT UNSIGNED NULL COMMENT 'FK -> merchants.id',
   report_period DATE NOT NULL,
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
   output_filename VARCHAR(255) NULL,
@@ -219,7 +240,13 @@ CREATE TABLE IF NOT EXISTS report_runs (
 ) ENGINE=InnoDB;
 
 INSERT INTO schema_migrations (version, description)
-VALUES ('20260819_001', 'Initial merchant performance schema')
+VALUES
+  ('20260819_001', 'Initial merchant performance schema'),
+  ('20260819_002', 'Include merchant in transaction natural key'),
+  ('20260819_003', 'Seed success rules verified from report template'),
+  ('20260820_004', 'Add transaction preview staging and change history'),
+  ('20260820_005', 'Prevent duplicate merchant names'),
+  ('20260820_006', 'Document foreign key source columns')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO response_code_rules
