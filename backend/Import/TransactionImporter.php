@@ -216,7 +216,7 @@ final class TransactionImporter
     /** Menentukan apakah nilai transaksi existing sama dengan nilai dari workbook. */
     private function hasSameTotals(array $existing, array $row): bool
     {
-        return (int) $existing['total_trx'] === (int) $row['total_trx'] && number_format((float) $existing['total_amount'], 2, '.', '') === (string) $row['total_amount'];
+        return (int) $existing['total_trx'] === (int) $row['total_trx'] && (string) $existing['total_amount'] === (string) $row['total_amount'];
     }
 
     /** Menyusun ringkasan jumlah status preview untuk ditampilkan oleh klien. */
@@ -328,7 +328,7 @@ final class TransactionImporter
     {
         $fields = [...self::NATURAL_KEY_FIELDS, 'total_trx', 'total_amount', 'source_batch_id', 'source_row_number'];
         $snapshot = array_intersect_key($row, array_flip($fields));
-        $snapshot['total_trx'] = (int) $snapshot['total_trx']; $snapshot['total_amount'] = number_format((float) $snapshot['total_amount'], 2, '.', '');
+        $snapshot['total_trx'] = (int) $snapshot['total_trx']; $snapshot['total_amount'] = (string) $snapshot['total_amount'];
         $snapshot['source_batch_id'] = (int) $snapshot['source_batch_id']; $snapshot['source_row_number'] = (int) $snapshot['source_row_number'];
         return $snapshot;
     }
@@ -339,7 +339,7 @@ final class TransactionImporter
         $changedFields = [];
         if ($outcome === 'CHANGED' && $normalized !== null && $existing !== null) {
             foreach (['total_trx', 'total_amount'] as $field) {
-                $old = $field === 'total_trx' ? (int) $existing[$field] : number_format((float) $existing[$field], 2, '.', '');
+                $old = $field === 'total_trx' ? (int) $existing[$field] : (string) $existing[$field];
                 if ((string) $old !== (string) $normalized[$field]) $changedFields[] = $field;
             }
         }

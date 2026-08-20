@@ -20,7 +20,11 @@ const outcomeStyles: Record<TransactionImportOutcome, string> = {
 
 // Memformat angka transaksi untuk tabel preview tanpa mengubah nilai sumber.
 function formatNumber(value: number | string | undefined): string {
-  return value === undefined ? '—' : Number(value).toLocaleString('id-ID', { maximumFractionDigits: 2 });
+  if (value === undefined) return '—';
+  const [whole, fraction = ''] = String(value).split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const visibleFraction = fraction.slice(0, 2).replace(/0+$/, '');
+  return visibleFraction ? `${grouped},${visibleFraction}` : grouped;
 }
 
 // Menampilkan nilai baru dan lama ketika field berubah pada database.

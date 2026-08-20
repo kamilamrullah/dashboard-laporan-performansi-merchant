@@ -231,17 +231,55 @@ final class TransactionWorkbookReader
         return (int) $number;
     }
 
-    /** Menormalisasi nominal Excel termasuk notasi ilmiah menjadi string desimal dua digit. */
+    /** Menormalisasi nominal Excel termasuk notasi ilmiah secara presisi tanpa konversi floating-point. */
     private function normalizeDecimal(string $value, int $sourceRow, string $field): string
     {
-        if (!is_numeric($value)) {
+        $value = trim($value);
+        if (!preg_match('/^\+?(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/', $value, $matches)) {
             throw new RuntimeException("{$field} tidak valid pada baris {$sourceRow}.");
         }
-        $number = (float) $value;
-        if (!is_finite($number) || $number < 0 || $number >= 1000000000000000000) {
-            throw new RuntimeException("{$field} harus berupa nominal non-negatif dalam batas yang didukung pada baris {$sourceRow}.");
+        $integerDigits = $matches[1];
+        $fractionDigits = $matches[2] ?? '';
+        $exponent = isset($matches[3]) ? (int) $matches[3] : 0;
+        if (abs($exponent) > 1000) {
+            throw new RuntimeException("{$field} memiliki eksponen di luar batas pada baris {$sourceRow}.");
         }
-        return number_format($number, 2, '.', '');
+        $digits = $integerDigits . $fractionDigits;
+        $decimalPosition = strlen($integerDigits) + $exponent;
+        $scaledPosition = $decimalPosition + 2;
+        if ($scaledPosition <= 0) {
+            $scaled = '0';
+            $roundingDigit = $scaledPosition === 0 ? ($digits[0] ?? '0') : '0';
+        } elseif ($scaledPosition >= strlen($digits)) {
+            $scaled = $digits . str_repeat('0', $scaledPosition - strlen($digits));
+            $roundingDigit = '0';
+        } else {
+            $scaled = substr($digits, 0, $scaledPosition);
+            $roundingDigit = $digits[$scaledPosition] ?? '0';
+        }
+        $scaled = ltrim($scaled, '0');
+        if ($scaled === '') $scaled = '0';
+        if ($roundingDigit >= '5') $scaled = $this->incrementDigits($scaled);
+        $scaled = str_pad($scaled, 3, '0', STR_PAD_LEFT);
+        $whole = ltrim(substr($scaled, 0, -2), '0');
+        if ($whole === '') $whole = '0';
+        if (strlen($whole) > 18) {
+            throw new RuntimeException("{$field} melebihi kapasitas DECIMAL(20,2) pada baris {$sourceRow}.");
+        }
+        return $whole . '.' . substr($scaled, -2);
+    }
+
+    /** Menambahkan satu pada string digit desimal tanpa bergantung pada batas integer PHP. */
+    private function incrementDigits(string $digits): string
+    {
+        $result = $digits;
+        $carry = 1;
+        for ($index = strlen($result) - 1; $index >= 0 && $carry === 1; $index--) {
+            $next = ((int) $result[$index]) + $carry;
+            $result[$index] = (string) ($next % 10);
+            $carry = intdiv($next, 10);
+        }
+        return $carry === 1 ? '1' . $result : $result;
     }
 
     /** Menemukan path worksheet berdasarkan nama sheet melalui relationship OpenXML. */
