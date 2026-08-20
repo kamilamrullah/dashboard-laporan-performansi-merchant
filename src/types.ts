@@ -91,3 +91,47 @@ export interface TransactionImportResult {
   duplicate: number;
   rejected: number;
 }
+
+export interface PaginationMeta { page: number; per_page: number; total: number; total_pages: number; }
+
+export interface TransactionImportBatch {
+  id: number;
+  original_filename: string;
+  file_sha256?: string;
+  status: string;
+  detected_period_start: string | null;
+  detected_period_end: string | null;
+  total_rows: number;
+  valid_rows: number;
+  inserted_rows: number;
+  updated_rows: number;
+  duplicate_rows: number;
+  rejected_rows: number;
+  failure_message?: string | null;
+  imported_by: string | null;
+  confirmed_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  merchant_id: number | null;
+  merchant_name: string | null;
+}
+
+export interface TransactionImportHistoryRow {
+  id: number;
+  source_row_number: number;
+  outcome: string;
+  normalized_data: TransactionImportData | null;
+  existing_data: TransactionImportData | null;
+  validation_errors: { message?: string } | null;
+  created_at: string;
+}
+
+export interface TransactionImportHistory {
+  items: TransactionImportBatch[];
+  pagination: PaginationMeta;
+}
+
+export interface TransactionImportBatchDetail {
+  batch: TransactionImportBatch;
+  rows: { items: TransactionImportHistoryRow[]; pagination: PaginationMeta };
+}

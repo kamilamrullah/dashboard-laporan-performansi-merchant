@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, FileSpreadsheet, Info, LoaderCircle, RotateCcw, ShieldCheck, UploadCloud, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, FileSpreadsheet, History, Info, LoaderCircle, RotateCcw, ShieldCheck, UploadCloud, X } from 'lucide-react';
 import { confirmTransactionImport, previewTransactionImport } from '../services/transactionImportApi';
 import type { MerchantOption, TransactionImportOutcome, TransactionImportPreview, TransactionImportResult } from '../types';
+import { TransactionImportHistory } from './TransactionImportHistory';
 
 interface ImportPanelProps { type?: 'transactions' | 'tickets'; merchantOptions?: MerchantOption[]; onCompleted?: () => void; }
 
@@ -44,6 +45,7 @@ export function ImportPanel({ type = 'transactions', merchantOptions = [], onCom
   const [error, setError] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
+  const [activeView, setActiveView] = useState<'upload' | 'history'>('upload');
   const selectedMerchant = merchantOptions.find((merchant) => merchant.merchant_name.trim().toLocaleLowerCase('id-ID') === merchantInput.trim().toLocaleLowerCase('id-ID')) ?? null;
   const isNewMerchant = merchantInput.trim() !== '' && selectedMerchant === null;
 
@@ -84,9 +86,13 @@ export function ImportPanel({ type = 'transactions', merchantOptions = [], onCom
 
   if (type === 'tickets') return <div className="flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-5"><Info className="h-5 w-5 shrink-0 text-amber-600"/><div><h3 className="text-sm font-bold text-amber-900">Import tiket belum tersedia</h3><p className="mt-1 text-xs leading-5 text-amber-800">Tahap ini khusus implementasi data transaksi. Import tiket akan menggunakan validasi dan staging terpisah.</p></div></div>;
 
-  if (result) return <div className="mx-auto max-w-2xl rounded-2xl border border-emerald-200 bg-white p-7 text-center shadow-sm"><span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-600"><CheckCircle2 className="h-7 w-7"/></span><h3 className="mt-4 text-lg font-bold text-slate-900">Import transaksi selesai</h3><p className="mt-1 text-xs text-slate-500">Batch #{result.batch_id} berhasil diproses dan dashboard sedang dimuat ulang.</p><div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">{[['Ditambahkan', result.inserted], ['Diperbarui', result.updated], ['Duplikat', result.duplicate], ['Ditolak', result.rejected]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4"><p className="text-xl font-bold text-slate-900">{value}</p><p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p></div>)}</div><button onClick={reset} className="mt-6 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-bold text-white hover:bg-indigo-700"><RotateCcw className="h-4 w-4"/>Import file lain</button></div>;
+  const viewTabs = <nav className="flex w-fit rounded-xl border border-slate-200 bg-white p-1 shadow-sm"><button onClick={() => setActiveView('upload')} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${activeView === 'upload' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}><UploadCloud className="h-3.5 w-3.5"/>Upload Baru</button><button onClick={() => setActiveView('history')} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${activeView === 'history' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}><History className="h-3.5 w-3.5"/>Riwayat Import</button></nav>;
 
-  return <div className="space-y-5">
+  if (activeView === 'history') return <div className="space-y-5">{viewTabs}<TransactionImportHistory/></div>;
+
+  if (result) return <div className="space-y-5">{viewTabs}<div className="mx-auto max-w-2xl rounded-2xl border border-emerald-200 bg-white p-7 text-center shadow-sm"><span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-600"><CheckCircle2 className="h-7 w-7"/></span><h3 className="mt-4 text-lg font-bold text-slate-900">Import transaksi selesai</h3><p className="mt-1 text-xs text-slate-500">Batch #{result.batch_id} berhasil diproses dan dashboard sedang dimuat ulang.</p><div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">{[['Ditambahkan', result.inserted], ['Diperbarui', result.updated], ['Duplikat', result.duplicate], ['Ditolak', result.rejected]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4"><p className="text-xl font-bold text-slate-900">{value}</p><p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p></div>)}</div><div className="mt-6 flex flex-wrap justify-center gap-3"><button onClick={reset} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-bold text-white hover:bg-indigo-700"><RotateCcw className="h-4 w-4"/>Import file lain</button><button onClick={() => setActiveView('history')} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-5 py-3 text-xs font-bold text-slate-600"><History className="h-4 w-4"/>Lihat riwayat</button></div></div></div>;
+
+  return <div className="space-y-5">{viewTabs}
     {error && <div role="alert" className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs font-semibold text-rose-700"><AlertCircle className="h-4 w-4 shrink-0"/><span className="flex-1">{error}</span><button aria-label="Tutup pesan" onClick={() => setError(null)}><X className="h-4 w-4"/></button></div>}
     {!preview && <div className="grid gap-6 xl:grid-cols-[1.25fr_.75fr]">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">

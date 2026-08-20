@@ -1,4 +1,4 @@
-import type { TransactionImportPreview, TransactionImportResult } from '../types';
+import type { TransactionImportBatchDetail, TransactionImportHistory, TransactionImportPreview, TransactionImportResult } from '../types';
 
 interface ApiErrorPayload { error?: string; message?: string; }
 
@@ -32,4 +32,18 @@ export async function confirmTransactionImport(preview: TransactionImportPreview
     body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, changed_rows_action: changedRowsAction, confirmed_by: confirmedBy }),
   });
   return parseResponse<TransactionImportResult>(response, 'Konfirmasi import transaksi gagal diproses.');
+}
+
+// Mengambil daftar batch transaksi terbaru dengan pagination untuk halaman riwayat.
+export async function fetchTransactionImportHistory(page: number, signal?: AbortSignal): Promise<TransactionImportHistory> {
+  const parameters = new URLSearchParams({ page: String(page), per_page: '20' });
+  const response = await fetch(`/api/transaction-import-history.php?${parameters}`, { signal, headers: { Accept: 'application/json' } });
+  return parseResponse<TransactionImportHistory>(response, 'Riwayat import transaksi gagal dimuat.');
+}
+
+// Mengambil metadata dan halaman detail baris dari satu batch import transaksi.
+export async function fetchTransactionImportBatch(batchId: number, page: number, signal?: AbortSignal): Promise<TransactionImportBatchDetail> {
+  const parameters = new URLSearchParams({ batch_id: String(batchId), page: String(page), per_page: '50' });
+  const response = await fetch(`/api/transaction-import-history.php?${parameters}`, { signal, headers: { Accept: 'application/json' } });
+  return parseResponse<TransactionImportBatchDetail>(response, 'Detail batch transaksi gagal dimuat.');
 }
