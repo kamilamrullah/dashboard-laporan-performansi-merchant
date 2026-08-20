@@ -79,9 +79,10 @@ export interface TransactionImportPreview {
   period_end: string | null;
   summary: { total: number; ready: number; changed: number; duplicate_in_file: number; duplicate_database: number; conflict_in_file: number; invalid: number };
   rows: TransactionImportRow[];
-  visible_rows: number;
-  rows_truncated: boolean;
+  pagination: PaginationMeta;
 }
+
+export interface TransactionImportPreviewPage { items: TransactionImportRow[]; pagination: PaginationMeta; }
 
 export interface TransactionImportResult {
   status: 'COMPLETED';

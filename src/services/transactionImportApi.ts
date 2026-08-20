@@ -1,4 +1,4 @@
-import type { TransactionImportBatchDetail, TransactionImportHistory, TransactionImportPreview, TransactionImportResult } from '../types';
+import type { TransactionImportBatchDetail, TransactionImportHistory, TransactionImportPreview, TransactionImportPreviewPage, TransactionImportResult, TransactionImportOutcome } from '../types';
 
 interface ApiErrorPayload { error?: string; message?: string; }
 
@@ -32,6 +32,16 @@ export async function confirmTransactionImport(preview: TransactionImportPreview
     body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, changed_rows_action: changedRowsAction, confirmed_by: confirmedBy }),
   });
   return parseResponse<TransactionImportResult>(response, 'Konfirmasi import transaksi gagal diproses.');
+}
+
+// Mengambil halaman staging preview menggunakan token dalam body agar tidak tercatat pada URL server.
+export async function fetchTransactionPreviewRows(preview: TransactionImportPreview, page: number, outcome: TransactionImportOutcome | ''): Promise<TransactionImportPreviewPage> {
+  const response = await fetch('/api/transaction-import-preview-rows.php', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, page, per_page: 50, outcome }),
+  });
+  return parseResponse<TransactionImportPreviewPage>(response, 'Halaman preview transaksi gagal dimuat.');
 }
 
 // Mengambil daftar batch transaksi terbaru dengan pagination untuk halaman riwayat.

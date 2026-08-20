@@ -43,13 +43,11 @@ final class TransactionImporter
             if ($replaceableBatchId !== null) $this->deleteReplaceablePreview($replaceableBatchId, $hash);
             $merchantId = $this->upsertMerchant($merchantCode, $merchantName);
             $batchId = $this->createPreviewBatch($merchantId, $originalFilename, $hash, $periodStart, $periodEnd, (int) $inspection['total_rows'], hash('sha256', $token));
-            $previewRows = $this->stageRows($batchId, $merchantId, $rows, $inspection['invalid_rows']);
-            $summary = $this->summarizePreview($previewRows);
+            $summary = $this->stageRows($batchId, $merchantId, $rows, $inspection['invalid_rows']);
             $this->updatePreviewBatch($batchId, count($rows), $summary);
             $this->database->commit();
-            usort($previewRows, static fn (array $left, array $right): int => [self::outcomePriority($left['outcome']), $left['source_row_number']] <=> [self::outcomePriority($right['outcome']), $right['source_row_number']]);
-            $visibleRows = array_slice($previewRows, 0, 500);
-            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'rows' => $visibleRows, 'visible_rows' => count($visibleRows), 'rows_truncated' => count($previewRows) > count($visibleRows)];
+            $previewPage = $this->previewRows($batchId, $token, 1, 50, null);
+            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'rows' => $previewPage['items'], 'pagination' => $previewPage['pagination']];
         } catch (Throwable $error) {
             if ($this->database->inTransaction()) $this->database->rollBack();
             throw $error;
@@ -87,6 +85,45 @@ final class TransactionImporter
             if ($this->database->inTransaction()) $this->database->rollBack();
             throw $error;
         }
+    }
+
+    /** Mengambil satu halaman staging preview setelah memvalidasi token dan filter outcome. */
+    public function previewRows(int $batchId, string $token, int $page, int $perPage, ?string $outcome): array
+    {
+        $allowedOutcomes = ['READY', 'CHANGED', 'DUPLICATE_IN_FILE', 'DUPLICATE_DATABASE', 'CONFLICT_IN_FILE', 'INVALID'];
+        if ($page < 1 || $perPage < 1 || $perPage > 100 || ($outcome !== null && !in_array($outcome, $allowedOutcomes, true))) {
+            throw new RuntimeException('Parameter halaman atau filter preview tidak valid.');
+        }
+        $batch = $this->findPreviewBatch($batchId);
+        $this->validateConfirmation($batch, $token);
+        $filterSql = $outcome === null ? '' : ' AND outcome = :outcome';
+        $parameters = ['batch_id' => $batchId];
+        if ($outcome !== null) $parameters['outcome'] = $outcome;
+        $count = $this->database->prepare('SELECT COUNT(*) FROM transaction_import_rows WHERE batch_id = :batch_id' . $filterSql);
+        $count->execute($parameters);
+        $total = (int) $count->fetchColumn();
+        $offset = ($page - 1) * $perPage;
+        $statement = $this->database->prepare(
+            "SELECT id, source_row_number, outcome, normalized_data, existing_data, validation_errors
+             FROM transaction_import_rows WHERE batch_id = :batch_id{$filterSql}
+             ORDER BY CASE outcome WHEN 'CHANGED' THEN 0 WHEN 'INVALID' THEN 1 WHEN 'CONFLICT_IN_FILE' THEN 1
+                       WHEN 'DUPLICATE_IN_FILE' THEN 2 WHEN 'DUPLICATE_DATABASE' THEN 2 WHEN 'READY' THEN 3 ELSE 4 END,
+                      source_row_number LIMIT :limit OFFSET :offset"
+        );
+        foreach ($parameters as $name => $value) $statement->bindValue($name, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        $statement->bindValue('limit', $perPage, PDO::PARAM_INT);
+        $statement->bindValue('offset', $offset, PDO::PARAM_INT);
+        $statement->execute();
+        $paymentChannels = $this->loadPaymentChannels();
+        $items = [];
+        foreach ($statement->fetchAll() as $staged) {
+            $normalized = $staged['normalized_data'] === null ? null : $this->decodeJson((string) $staged['normalized_data']);
+            $existing = $staged['existing_data'] === null ? null : $this->decodeJson((string) $staged['existing_data']);
+            $errors = $staged['validation_errors'] === null ? null : $this->decodeJson((string) $staged['validation_errors']);
+            $paymentChannel = $normalized === null ? null : ($paymentChannels[$normalized['sic_code']] ?? null);
+            $items[] = $this->previewPayload((int) $staged['id'], (int) $staged['source_row_number'], (string) $staged['outcome'], $normalized, $existing, $errors, $paymentChannel);
+        }
+        return ['items' => $items, 'pagination' => ['page' => $page, 'per_page' => $perPage, 'total' => $total, 'total_pages' => max(1, (int) ceil($total / $perPage))]];
     }
 
     /** Menyediakan kompatibilitas CLI lama dengan preview lalu konfirmasi tanpa mengganti konflik. */
@@ -162,7 +199,8 @@ final class TransactionImporter
     /** Mengklasifikasikan dan menyimpan seluruh baris valid maupun invalid untuk preview. */
     private function stageRows(int $batchId, int $merchantId, array $rows, array $invalidRows): array
     {
-        $preview = []; $seenFingerprints = []; $seenNaturalKeys = []; $paymentChannels = $this->loadPaymentChannels();
+        $summary = ['total' => count($rows) + count($invalidRows), 'ready' => 0, 'changed' => 0, 'duplicate_in_file' => 0, 'duplicate_database' => 0, 'conflict_in_file' => 0, 'invalid' => 0];
+        $seenFingerprints = []; $seenNaturalKeys = [];
         foreach ($rows as $row) {
             $fingerprint = $this->reader->fingerprint($row); $naturalKey = $this->reader->naturalKey($row); $existing = null;
             if (isset($seenFingerprints[$fingerprint])) $outcome = 'DUPLICATE_IN_FILE';
@@ -173,15 +211,15 @@ final class TransactionImporter
             }
             $seenFingerprints[$fingerprint] = true; $seenNaturalKeys[$naturalKey] = true;
             $transactionId = $existing === null ? null : (int) $existing['id'];
-            $id = $this->insertStagedRow($batchId, $row['source_row_number'], $transactionId, $fingerprint, $outcome, null, $row, $existing);
-            $preview[] = $this->previewPayload($id, $row['source_row_number'], $outcome, $row, $existing, null, $paymentChannels[$row['sic_code']] ?? null);
+            $this->insertStagedRow($batchId, $row['source_row_number'], $transactionId, $fingerprint, $outcome, null, $row, $existing);
+            $summary[strtolower($outcome)]++;
         }
         foreach ($invalidRows as $invalid) {
             $errors = ['message' => $invalid['message']];
-            $id = $this->insertStagedRow($batchId, $invalid['source_row_number'], null, hash('sha256', $invalid['source_row_number'] . '|' . $invalid['message']), 'INVALID', $errors, null, null);
-            $preview[] = $this->previewPayload($id, $invalid['source_row_number'], 'INVALID', null, null, $errors, null);
+            $this->insertStagedRow($batchId, $invalid['source_row_number'], null, hash('sha256', $invalid['source_row_number'] . '|' . $invalid['message']), 'INVALID', $errors, null, null);
+            $summary['invalid']++;
         }
-        return $preview;
+        return $summary;
     }
 
     /** Memuat seluruh mapping SIC code ke nama payment channel untuk memperkaya hasil preview. */
@@ -219,14 +257,6 @@ final class TransactionImporter
         return (int) $existing['total_trx'] === (int) $row['total_trx'] && (string) $existing['total_amount'] === (string) $row['total_amount'];
     }
 
-    /** Menyusun ringkasan jumlah status preview untuk ditampilkan oleh klien. */
-    private function summarizePreview(array $rows): array
-    {
-        $summary = ['total' => count($rows), 'ready' => 0, 'changed' => 0, 'duplicate_in_file' => 0, 'duplicate_database' => 0, 'conflict_in_file' => 0, 'invalid' => 0];
-        foreach ($rows as $row) { $key = strtolower((string) $row['outcome']); if (array_key_exists($key, $summary)) $summary[$key]++; }
-        return $summary;
-    }
-
     /** Memperbarui statistik batch setelah semua baris preview tersimpan. */
     private function updatePreviewBatch(int $batchId, int $validRows, array $summary): void
     {
@@ -239,6 +269,16 @@ final class TransactionImporter
     {
         $statement = $this->database->prepare('SELECT id, merchant_id, status, confirmation_token_hash, confirmation_expires_at FROM import_batches WHERE id = :id FOR UPDATE');
         $statement->execute(['id' => $batchId]); $batch = $statement->fetch();
+        if ($batch === false) throw new RuntimeException('Batch import tidak ditemukan.');
+        return $batch;
+    }
+
+    /** Mengambil metadata preview tanpa row lock untuk permintaan halaman read-only. */
+    private function findPreviewBatch(int $batchId): array
+    {
+        $statement = $this->database->prepare('SELECT id, merchant_id, status, confirmation_token_hash, confirmation_expires_at FROM import_batches WHERE id = :id LIMIT 1');
+        $statement->execute(['id' => $batchId]);
+        $batch = $statement->fetch();
         if ($batch === false) throw new RuntimeException('Batch import tidak ditemukan.');
         return $batch;
     }
@@ -344,12 +384,6 @@ final class TransactionImporter
             }
         }
         return ['id' => $id, 'source_row_number' => $sourceRow, 'outcome' => $outcome, 'changed_fields' => $changedFields, 'payment_channel' => $paymentChannel, 'data' => $normalized, 'existing' => $existing === null ? null : $this->transactionSnapshot($existing), 'errors' => $errors];
-    }
-
-    /** Menentukan urutan preview agar perubahan dan masalah muncul sebelum baris siap. */
-    private static function outcomePriority(string $outcome): int
-    {
-        return match ($outcome) { 'CHANGED' => 0, 'INVALID', 'CONFLICT_IN_FILE' => 1, 'DUPLICATE_IN_FILE', 'DUPLICATE_DATABASE' => 2, default => 3 };
     }
 
     /** Mengubah array menjadi JSON dengan kegagalan eksplisit. */

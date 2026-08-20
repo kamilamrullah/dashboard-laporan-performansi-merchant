@@ -94,6 +94,10 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     assert_integration($preview['summary']['ready'] === 1, 'Baris READY pertama tidak terdeteksi.');
     assert_integration($preview['summary']['duplicate_in_file'] === 1, 'Duplikat dalam file tidak terdeteksi.');
     assert_integration($preview['summary']['invalid'] === 1, 'Baris invalid tidak terdeteksi.');
+    $secondPage = $importer->previewRows((int) $preview['batch_id'], (string) $preview['confirmation_token'], 2, 1, null);
+    assert_integration($secondPage['pagination']['total'] === 3 && count($secondPage['items']) === 1, 'Pagination preview tidak mengembalikan halaman yang benar.');
+    $invalidPage = $importer->previewRows((int) $preview['batch_id'], (string) $preview['confirmation_token'], 1, 50, 'INVALID');
+    assert_integration($invalidPage['pagination']['total'] === 1 && $invalidPage['items'][0]['outcome'] === 'INVALID', 'Filter outcome preview tidak bekerja.');
     $result = $importer->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, 'Integration Test');
     assert_integration($result['inserted'] === 1 && $result['duplicate'] === 1 && $result['rejected'] === 1, 'Statistik konfirmasi pertama tidak sesuai.');
     assert_integration((string) scalar($database, 'SELECT total_amount FROM transaction_aggregates LIMIT 1') === '123456789012345678.12', 'Nominal besar berubah saat disimpan ke database.');
