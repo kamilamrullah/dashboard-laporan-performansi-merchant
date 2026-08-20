@@ -91,6 +91,7 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     $invalid = transaction_row([0 => '20260231']);
     $fixtures[] = $firstFile = TransactionWorkbookFactory::create([$base, $base, $invalid], 'first-import');
     $preview = $importer->preview($firstFile, 'first.xlsx', 'TEST-MERCHANT', 'Test Merchant');
+    assert_integration($preview['original_filename'] === 'first.xlsx', 'Nama file asli tidak tersedia pada preview.');
     assert_integration($preview['summary']['ready'] === 1, 'Baris READY pertama tidak terdeteksi.');
     assert_integration($preview['summary']['duplicate_in_file'] === 1, 'Duplikat dalam file tidak terdeteksi.');
     assert_integration($preview['summary']['invalid'] === 1, 'Baris invalid tidak terdeteksi.');
@@ -129,6 +130,10 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     $newPreview = $importer->preview($pendingFile, 'pending.xlsx', 'TEST-MERCHANT', 'Test Merchant');
     assert_integration($oldPreview['batch_id'] !== $newPreview['batch_id'], 'Upload ulang harus mengganti batch preview lama.');
     assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM import_batches WHERE id = :id', ['id' => $oldPreview['batch_id']]) === 0, 'Batch preview lama belum dihapus.');
+    $deleted = $importer->deletePreview((int) $newPreview['batch_id'], (string) $newPreview['confirmation_token']);
+    assert_integration($deleted['status'] === 'DELETED', 'Preview terautentikasi tidak dapat dihapus.');
+    assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM import_batches WHERE id = :id', ['id' => $newPreview['batch_id']]) === 0, 'Metadata preview belum terhapus.');
+    assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM transaction_import_rows WHERE batch_id = :id', ['id' => $newPreview['batch_id']]) === 0, 'Staging preview belum terhapus melalui cascade.');
 
     $database->exec("CREATE TRIGGER fail_test_transaction BEFORE INSERT ON transaction_aggregates FOR EACH ROW BEGIN IF NEW.total_trx = 999 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Forced integration rollback'; END IF; END");
     $rollbackRows = [transaction_row([0 => '20260803', 8 => '20']), transaction_row([0 => '20260804', 8 => '999'])];

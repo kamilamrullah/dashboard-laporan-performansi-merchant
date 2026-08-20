@@ -33,7 +33,7 @@ function transaction_batch_list(PDO $database, int $page, int $perPage): array
     $statement = $database->prepare(
         "SELECT b.id, b.original_filename, b.status, b.detected_period_start, b.detected_period_end,
                 b.total_rows, b.valid_rows, b.inserted_rows, b.updated_rows, b.duplicate_rows, b.rejected_rows,
-                b.imported_by, b.confirmed_at, b.completed_at, b.created_at,
+                b.imported_by, b.confirmation_expires_at, b.confirmed_at, b.completed_at, b.created_at,
                 m.id merchant_id, m.merchant_name
          FROM import_batches b
          LEFT JOIN merchants m ON m.id = b.merchant_id
@@ -52,7 +52,7 @@ function transaction_batch(PDO $database, int $batchId): array
     $statement = $database->prepare(
         "SELECT b.id, b.original_filename, b.file_sha256, b.status, b.detected_period_start, b.detected_period_end,
                 b.total_rows, b.valid_rows, b.inserted_rows, b.updated_rows, b.duplicate_rows, b.rejected_rows,
-                b.failure_message, b.imported_by, b.confirmed_at, b.completed_at, b.created_at,
+                b.failure_message, b.imported_by, b.confirmation_expires_at, b.confirmed_at, b.completed_at, b.created_at,
                 m.id merchant_id, m.merchant_name
          FROM import_batches b LEFT JOIN merchants m ON m.id = b.merchant_id
          WHERE b.id = :id AND b.data_type = 'TRANSACTION' LIMIT 1"
@@ -61,6 +61,20 @@ function transaction_batch(PDO $database, int $batchId): array
     $batch = $statement->fetch();
     if ($batch === false) json_response(['error' => 'Batch transaksi tidak ditemukan.'], 404);
     return $batch;
+}
+
+/** Menghitung komposisi outcome staging untuk membangun kembali ringkasan preview. */
+function transaction_batch_summary(PDO $database, int $batchId): array
+{
+    $summary = ['total' => 0, 'ready' => 0, 'changed' => 0, 'duplicate_in_file' => 0, 'duplicate_database' => 0, 'conflict_in_file' => 0, 'invalid' => 0];
+    $statement = $database->prepare('SELECT outcome, COUNT(*) total FROM transaction_import_rows WHERE batch_id = :batch_id GROUP BY outcome');
+    $statement->execute(['batch_id' => $batchId]);
+    foreach ($statement->fetchAll() as $row) {
+        $summary['total'] += (int) $row['total'];
+        $key = strtolower((string) $row['outcome']);
+        if (array_key_exists($key, $summary)) $summary[$key] = (int) $row['total'];
+    }
+    return $summary;
 }
 
 /** Mengambil detail audit baris satu batch dengan perubahan dan error validasi. */
@@ -106,7 +120,7 @@ try {
     }
     $batchId = filter_var($batchIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     if ($batchId === false) json_response(['error' => 'Parameter batch_id tidak valid.'], 422);
-    json_response(['batch' => transaction_batch($database, (int) $batchId), 'rows' => transaction_batch_rows($database, (int) $batchId, $page, $perPage)]);
+    json_response(['batch' => transaction_batch($database, (int) $batchId), 'summary' => transaction_batch_summary($database, (int) $batchId), 'rows' => transaction_batch_rows($database, (int) $batchId, $page, $perPage)]);
 } catch (Throwable $error) {
     error_log($error->getMessage());
     json_response(['error' => 'Riwayat import transaksi gagal dimuat.'], 500);

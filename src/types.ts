@@ -73,16 +73,19 @@ export interface TransactionImportRow {
 export interface TransactionImportPreview {
   status: 'PREVIEWED';
   batch_id: number;
+  original_filename: string;
   confirmation_token: string;
   confirmation_expires_at: string;
   period_start: string | null;
   period_end: string | null;
-  summary: { total: number; ready: number; changed: number; duplicate_in_file: number; duplicate_database: number; conflict_in_file: number; invalid: number };
+  summary: TransactionImportSummary;
   rows: TransactionImportRow[];
   pagination: PaginationMeta;
 }
 
 export interface TransactionImportPreviewPage { items: TransactionImportRow[]; pagination: PaginationMeta; }
+
+export interface TransactionImportSummary { total: number; ready: number; changed: number; duplicate_in_file: number; duplicate_database: number; conflict_in_file: number; invalid: number; }
 
 export interface TransactionImportResult {
   status: 'COMPLETED';
@@ -110,6 +113,7 @@ export interface TransactionImportBatch {
   rejected_rows: number;
   failure_message?: string | null;
   imported_by: string | null;
+  confirmation_expires_at: string | null;
   confirmed_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -134,5 +138,8 @@ export interface TransactionImportHistory {
 
 export interface TransactionImportBatchDetail {
   batch: TransactionImportBatch;
+  summary: TransactionImportSummary;
   rows: { items: TransactionImportHistoryRow[]; pagination: PaginationMeta };
 }
+
+export interface TransactionPreviewDeleteResult { status: 'DELETED'; batch_id: number; }

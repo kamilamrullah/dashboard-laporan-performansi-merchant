@@ -1,6 +1,7 @@
-import type { TransactionImportBatchDetail, TransactionImportHistory, TransactionImportPreview, TransactionImportPreviewPage, TransactionImportResult, TransactionImportOutcome } from '../types';
+import type { TransactionImportBatchDetail, TransactionImportHistory, TransactionImportPreview, TransactionImportPreviewPage, TransactionImportResult, TransactionImportOutcome, TransactionPreviewDeleteResult } from '../types';
 
 interface ApiErrorPayload { error?: string; message?: string; }
+const previewTokenPrefix = 'transaction-import-preview-token:';
 
 // Membaca response JSON dan menghasilkan error konsisten ketika server menolak request.
 async function parseResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
@@ -42,6 +43,30 @@ export async function fetchTransactionPreviewRows(preview: TransactionImportPrev
     body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, page, per_page: 50, outcome }),
   });
   return parseResponse<TransactionImportPreviewPage>(response, 'Halaman preview transaksi gagal dimuat.');
+}
+
+// Menyimpan token satu kali di sesi browser agar preview dapat dilanjutkan setelah modal ditutup.
+export function storeTransactionPreviewToken(batchId: number, token: string): void {
+  try { sessionStorage.setItem(`${previewTokenPrefix}${batchId}`, token); } catch { /* Browser dapat menolak storage; preview tetap bekerja selama modal terbuka. */ }
+}
+
+// Mengambil token preview milik sesi browser tanpa pernah meminta token asli dari server.
+export function getTransactionPreviewToken(batchId: number): string | null {
+  try { return sessionStorage.getItem(`${previewTokenPrefix}${batchId}`); } catch { return null; }
+}
+
+// Menghapus token lokal setelah preview selesai di-import atau dihapus.
+export function clearTransactionPreviewToken(batchId: number): void {
+  try { sessionStorage.removeItem(`${previewTokenPrefix}${batchId}`); } catch { /* Tidak ada tindakan lanjutan bila storage tidak tersedia. */ }
+}
+
+// Menghapus preview terautentikasi tanpa menyentuh transaksi dari batch completed.
+export async function deleteTransactionPreview(batchId: number, token: string): Promise<TransactionPreviewDeleteResult> {
+  const response = await fetch('/api/transaction-import-preview-delete.php', {
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batch_id: batchId, confirmation_token: token }),
+  });
+  return parseResponse<TransactionPreviewDeleteResult>(response, 'Preview transaksi gagal dihapus.');
 }
 
 // Mengambil daftar batch transaksi terbaru dengan pagination untuk halaman riwayat.

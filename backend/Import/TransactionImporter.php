@@ -47,7 +47,7 @@ final class TransactionImporter
             $this->updatePreviewBatch($batchId, count($rows), $summary);
             $this->database->commit();
             $previewPage = $this->previewRows($batchId, $token, 1, 50, null);
-            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'rows' => $previewPage['items'], 'pagination' => $previewPage['pagination']];
+            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'original_filename' => mb_substr(basename(str_replace('\\', '/', $originalFilename)), 0, 255), 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'rows' => $previewPage['items'], 'pagination' => $previewPage['pagination']];
         } catch (Throwable $error) {
             if ($this->database->inTransaction()) $this->database->rollBack();
             throw $error;
@@ -124,6 +124,27 @@ final class TransactionImporter
             $items[] = $this->previewPayload((int) $staged['id'], (int) $staged['source_row_number'], (string) $staged['outcome'], $normalized, $existing, $errors, $paymentChannel);
         }
         return ['items' => $items, 'pagination' => ['page' => $page, 'per_page' => $perPage, 'total' => $total, 'total_pages' => max(1, (int) ceil($total / $perPage))]];
+    }
+
+    /** Menghapus batch preview terautentikasi beserta staging-nya jika belum memiliki transaksi aktif. */
+    public function deletePreview(int $batchId, string $token): array
+    {
+        $this->database->beginTransaction();
+        try {
+            $batch = $this->lockPreviewBatch($batchId);
+            $this->validateConfirmation($batch, $token);
+            $statement = $this->database->prepare(
+                "DELETE FROM import_batches WHERE id = :id AND status = 'PREVIEWED'
+                 AND NOT EXISTS (SELECT 1 FROM transaction_aggregates WHERE source_batch_id = :transaction_batch_id)"
+            );
+            $statement->execute(['id' => $batchId, 'transaction_batch_id' => $batchId]);
+            if ($statement->rowCount() !== 1) throw new RuntimeException('Preview tidak dapat dihapus karena sudah memiliki transaksi aktif.');
+            $this->database->commit();
+            return ['status' => 'DELETED', 'batch_id' => $batchId];
+        } catch (Throwable $error) {
+            if ($this->database->inTransaction()) $this->database->rollBack();
+            throw $error;
+        }
     }
 
     /** Menyediakan kompatibilitas CLI lama dengan preview lalu konfirmasi tanpa mengganti konflik. */
