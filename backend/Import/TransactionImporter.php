@@ -147,6 +147,38 @@ final class TransactionImporter
         }
     }
 
+    /** Menghapus batch PREVIEWED melewati masa retensi dalam jumlah terbatas tanpa menyentuh data aktif. */
+    public function cleanupExpiredPreviews(int $retentionDays = 7, int $limit = 1000): array
+    {
+        if ($retentionDays < 1 || $retentionDays > 90 || $limit < 1 || $limit > 5000) {
+            throw new RuntimeException('Parameter cleanup preview tidak valid.');
+        }
+        $this->database->beginTransaction();
+        try {
+            $statement = $this->database->query(
+                "SELECT b.id FROM import_batches b
+                 WHERE b.data_type = 'TRANSACTION' AND b.status = 'PREVIEWED'
+                   AND b.created_at < DATE_SUB(NOW(), INTERVAL {$retentionDays} DAY)
+                   AND NOT EXISTS (SELECT 1 FROM transaction_aggregates t WHERE t.source_batch_id = b.id)
+                 ORDER BY b.created_at, b.id LIMIT {$limit} FOR UPDATE"
+            );
+            $batchIds = array_map('intval', array_column($statement->fetchAll(), 'id'));
+            if ($batchIds !== []) {
+                $placeholders = implode(',', array_fill(0, count($batchIds), '?'));
+                $delete = $this->database->prepare("DELETE FROM import_batches WHERE status = 'PREVIEWED' AND id IN ({$placeholders})");
+                $delete->execute($batchIds);
+                $deleted = $delete->rowCount();
+            } else {
+                $deleted = 0;
+            }
+            $this->database->commit();
+            return ['status' => 'COMPLETED', 'retention_days' => $retentionDays, 'deleted_batches' => $deleted];
+        } catch (Throwable $error) {
+            if ($this->database->inTransaction()) $this->database->rollBack();
+            throw $error;
+        }
+    }
+
     /** Menyediakan kompatibilitas CLI lama dengan preview lalu konfirmasi tanpa mengganti konflik. */
     public function import(string $filePath, string $merchantCode, string $merchantName, ?string $mappingFile = null): array
     {

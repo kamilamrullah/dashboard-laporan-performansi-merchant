@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
   PRIMARY KEY (id),
   UNIQUE KEY uq_import_batches_file_hash (file_sha256),
   KEY idx_import_batches_type_status (data_type, status),
+  KEY idx_import_batches_preview_cleanup (data_type, status, created_at),
   KEY idx_import_batches_period (detected_period_start, detected_period_end),
   CONSTRAINT fk_import_batches_merchant FOREIGN KEY (merchant_id) REFERENCES merchants (id)
 ) ENGINE=InnoDB;
@@ -246,7 +247,8 @@ VALUES
   ('20260819_003', 'Seed success rules verified from report template'),
   ('20260820_004', 'Add transaction preview staging and change history'),
   ('20260820_005', 'Prevent duplicate merchant names'),
-  ('20260820_006', 'Document foreign key source columns')
+  ('20260820_006', 'Document foreign key source columns'),
+  ('20260820_007', 'Index expired transaction preview cleanup')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO response_code_rules

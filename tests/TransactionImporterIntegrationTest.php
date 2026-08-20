@@ -135,6 +135,15 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM import_batches WHERE id = :id', ['id' => $newPreview['batch_id']]) === 0, 'Metadata preview belum terhapus.');
     assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM transaction_import_rows WHERE batch_id = :id', ['id' => $newPreview['batch_id']]) === 0, 'Staging preview belum terhapus melalui cascade.');
 
+    $fixtures[] = $expiredFile = TransactionWorkbookFactory::create([transaction_row([0 => '20260805'])], 'expired-preview');
+    $expiredPreview = $importer->preview($expiredFile, 'expired.xlsx', 'TEST-MERCHANT', 'Test Merchant');
+    $agePreview = $database->prepare("UPDATE import_batches SET created_at = DATE_SUB(NOW(), INTERVAL 8 DAY), confirmation_expires_at = DATE_SUB(NOW(), INTERVAL 7 DAY) WHERE id = :id");
+    $agePreview->execute(['id' => $expiredPreview['batch_id']]);
+    $cleanup = $importer->cleanupExpiredPreviews(7, 100);
+    assert_integration($cleanup['deleted_batches'] === 1, 'Cleanup tidak menghapus tepat satu preview kedaluwarsa.');
+    assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM import_batches WHERE id = :id', ['id' => $expiredPreview['batch_id']]) === 0, 'Preview kedaluwarsa masih tersimpan.');
+    assert_integration((int) scalar($database, "SELECT COUNT(*) FROM import_batches WHERE status = 'COMPLETED'") >= 2, 'Cleanup menghapus batch completed.');
+
     $database->exec("CREATE TRIGGER fail_test_transaction BEFORE INSERT ON transaction_aggregates FOR EACH ROW BEGIN IF NEW.total_trx = 999 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Forced integration rollback'; END IF; END");
     $rollbackRows = [transaction_row([0 => '20260803', 8 => '20']), transaction_row([0 => '20260804', 8 => '999'])];
     $fixtures[] = $rollbackFile = TransactionWorkbookFactory::create($rollbackRows, 'rollback-import');

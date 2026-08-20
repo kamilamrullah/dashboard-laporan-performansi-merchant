@@ -69,6 +69,11 @@ try {
     $database = database_connection();
     [$merchantCode, $merchantName] = resolve_merchant_selection($database);
     $importer = new TransactionImporter($database, new TransactionWorkbookReader());
+    try {
+        $importer->cleanupExpiredPreviews(7, 100);
+    } catch (Throwable $cleanupError) {
+        error_log('Cleanup preview tertunda: ' . $cleanupError->getMessage());
+    }
     $result = $importer->preview($upload['path'], $upload['name'], $merchantCode, $merchantName);
     json_response($result, $result['status'] === 'IDENTICAL_FILE' ? 409 : 200);
 } catch (RuntimeException $error) {
