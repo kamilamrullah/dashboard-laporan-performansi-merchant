@@ -26,11 +26,11 @@ export async function previewTransactionImport(file: File, merchantId: number | 
 }
 
 // Mengonfirmasi batch preview dengan pilihan memperbarui atau melewati data yang berubah.
-export async function confirmTransactionImport(preview: TransactionImportPreview, changedRowsAction: 'skip' | 'update', confirmedBy: string): Promise<TransactionImportResult> {
+export async function confirmTransactionImport(preview: TransactionImportPreview, changedRowsAction: 'skip' | 'update'): Promise<TransactionImportResult> {
   const response = await fetch('/api/transaction-import-confirm.php', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, changed_rows_action: changedRowsAction, confirmed_by: confirmedBy }),
+    body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, changed_rows_action: changedRowsAction }),
   });
   return parseResponse<TransactionImportResult>(response, 'Konfirmasi import transaksi gagal diproses.');
 }

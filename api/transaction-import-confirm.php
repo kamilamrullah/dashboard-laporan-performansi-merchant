@@ -32,14 +32,13 @@ function validate_confirmation_payload(array $payload): array
     $batchId = filter_var($payload['batch_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     $token = trim((string) ($payload['confirmation_token'] ?? ''));
     $action = (string) ($payload['changed_rows_action'] ?? 'skip');
-    $confirmedBy = trim((string) ($payload['confirmed_by'] ?? ''));
     if ($batchId === false || $token === '' || !in_array($action, ['skip', 'update'], true)) {
         throw new RuntimeException('batch_id, confirmation_token, atau changed_rows_action tidak valid.');
     }
-    if (mb_strlen($token) > 128 || mb_strlen($confirmedBy) > 100) {
-        throw new RuntimeException('Token atau identitas pengguna terlalu panjang.');
+    if (mb_strlen($token) > 128) {
+        throw new RuntimeException('Token konfirmasi terlalu panjang.');
     }
-    return [(int) $batchId, $token, $action === 'update', $confirmedBy === '' ? null : $confirmedBy];
+    return [(int) $batchId, $token, $action === 'update'];
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -51,9 +50,9 @@ if (stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json') !== 0
 }
 
 try {
-    [$batchId, $token, $updateChangedRows, $confirmedBy] = validate_confirmation_payload(confirmation_payload());
+    [$batchId, $token, $updateChangedRows] = validate_confirmation_payload(confirmation_payload());
     $importer = new TransactionImporter(database_connection(), new TransactionWorkbookReader());
-    json_response($importer->confirm($batchId, $token, $updateChangedRows, $confirmedBy));
+    json_response($importer->confirm($batchId, $token, $updateChangedRows, null));
 } catch (RuntimeException $error) {
     json_response(['error' => $error->getMessage()], 422);
 } catch (Throwable $error) {

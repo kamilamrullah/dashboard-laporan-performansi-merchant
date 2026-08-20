@@ -88,7 +88,7 @@ export function ImportPanel({ type = 'transactions', merchantOptions = [], onCom
   const confirmImport = async () => {
     if (!preview) return;
     setIsConfirming(true); setError(null);
-    try { const completed = await confirmTransactionImport(preview, changedAction, 'Kamil'); clearTransactionPreviewToken(preview.batch_id); setResult(completed); setPreview(null); onCompleted?.(); }
+    try { const completed = await confirmTransactionImport(preview, changedAction); clearTransactionPreviewToken(preview.batch_id); setResult(completed); setPreview(null); onCompleted?.(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Konfirmasi import gagal diproses.'); }
     finally { setIsConfirming(false); }
   };
