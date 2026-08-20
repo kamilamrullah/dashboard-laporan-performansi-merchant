@@ -12,6 +12,9 @@ body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, select, input { font: inherit; }
 button { cursor: pointer; }
 
+/* Menetapkan titik awal knob agar toggle sejajar di posisi aktif maupun nonaktif. */
+button[role="switch"] > span { left: 0; }
+
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }

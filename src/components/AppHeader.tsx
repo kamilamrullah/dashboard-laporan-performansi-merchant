@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, ChevronDown, FileOutput, FileSpreadsheet, Menu, Search, UploadCloud, WalletCards } from 'lucide-react';
+import { Bell, ChevronDown, CreditCard, FileOutput, FileSpreadsheet, Menu, Search, UploadCloud, WalletCards } from 'lucide-react';
 
 interface AppHeaderProps {
   onOpenImport: (type: 'transactions' | 'tickets') => void;
   onOpenReport: () => void;
+  onOpenPaymentChannels: () => void;
 }
 
 // Menampilkan navbar responsif beserta dropdown aksi untuk import dan generate laporan.
-export function AppHeader({ onOpenImport, onOpenReport }: AppHeaderProps) {
+export function AppHeader({ onOpenImport, onOpenReport, onOpenPaymentChannels }: AppHeaderProps) {
   const [isActionOpen, setIsActionOpen] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const actionRef = useRef<HTMLDivElement>(null);
@@ -42,6 +43,7 @@ export function AppHeader({ onOpenImport, onOpenReport }: AppHeaderProps) {
     { label: 'Import Data Transaksi', note: 'Workbook transaksi agregat', icon: FileSpreadsheet, action: () => onOpenImport('transactions') },
     { label: 'Import Tiket Aduan', note: 'Workbook data tiket', icon: UploadCloud, action: () => onOpenImport('tickets') },
     { label: 'Generate Laporan', note: 'Dokumen Microsoft Word', icon: FileOutput, action: onOpenReport },
+    { label: 'Master Payment Channel', note: 'Mapping SIC code', icon: CreditCard, action: onOpenPaymentChannels },
   ];
 
   return (
@@ -112,4 +114,3 @@ export function AppHeader({ onOpenImport, onOpenReport }: AppHeaderProps) {
     </header>
   );
 }
-

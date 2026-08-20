@@ -3,10 +3,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../backend/Import/TransactionWorkbookReader.php';
 require_once __DIR__ . '/../backend/Import/TransactionImporter.php';
+require_once __DIR__ . '/../backend/MasterData/PaymentChannelService.php';
 require_once __DIR__ . '/fixtures/TransactionWorkbookFactory.php';
 
 use App\Import\TransactionImporter;
 use App\Import\TransactionWorkbookReader;
+use App\MasterData\PaymentChannelService;
 
 const TEST_DATABASE = 'merchant_performance_report_test';
 
@@ -158,12 +160,41 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     assert_integration((string) scalar($database, 'SELECT status FROM import_batches WHERE id = :id', ['id' => $rollbackPreview['batch_id']]) === 'PREVIEWED', 'Status batch tidak kembali ke PREVIEWED setelah rollback.');
 }
 
+/** Menguji penambahan, status reversible, pencarian, penggunaan, dan audit master payment channel. */
+function run_payment_channel_scenarios(PDO $database): void
+{
+    $service = new PaymentChannelService($database);
+    $created = $service->mutate('create', ['sic_code' => '0042', 'channel_name' => 'Channel Test']);
+    assert_integration($created['status'] === 'CREATED' && $created['item']['sic_code'] === '0042', 'Mapping baru gagal dibuat atau leading zero hilang.');
+    $list = $service->list('0042', 'active', 1, 20);
+    assert_integration($list['pagination']['total'] === 1 && (int) $list['items'][0]['aggregate_rows'] > 0, 'Pencarian atau jumlah penggunaan mapping tidak sesuai.');
+    $service->mutate('set_active', ['sic_code' => '0042', 'is_active' => false]);
+    $inactive = $service->list('', 'inactive', 1, 20);
+    assert_integration($inactive['pagination']['total'] === 1 && (int) $inactive['items'][0]['is_active'] === 0, 'Mapping tidak berhasil dinonaktifkan.');
+    $history = $service->history('0042');
+    assert_integration(count($history['items']) === 2, 'Audit create dan deactivate tidak lengkap.');
+    try {
+        $service->mutate('update', ['sic_code' => '0042', 'channel_name' => 'Tidak Diizinkan']);
+        throw new RuntimeException('Aksi edit seharusnya ditolak.');
+    } catch (RuntimeException $error) {
+        assert_integration($error->getMessage() === 'Aksi payment channel tidak valid.', 'Endpoint masih menerima aksi edit.');
+    }
+    try {
+        $service->mutate('create', ['sic_code' => '0042', 'channel_name' => 'Duplikat']);
+        throw new RuntimeException('SIC code duplikat seharusnya ditolak.');
+    } catch (RuntimeException $error) {
+        assert_integration($error->getMessage() === 'SIC code sudah tersedia. Mapping yang ada dapat diaktifkan atau dinonaktifkan.', 'Pesan duplikat SIC tidak sesuai.');
+    }
+}
+
 validate_test_database_name();
 $server = server_connection();
 $fixtures = [];
 try {
     prepare_test_database($server);
-    run_importer_scenarios(test_connection(), $fixtures);
+    $database = test_connection();
+    run_importer_scenarios($database, $fixtures);
+    run_payment_channel_scenarios($database);
     echo "TransactionImporterIntegrationTest: OK\n";
 } finally {
     foreach ($fixtures as $fixture) @unlink($fixture);

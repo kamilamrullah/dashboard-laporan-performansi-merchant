@@ -143,3 +143,30 @@ export interface TransactionImportBatchDetail {
 }
 
 export interface TransactionPreviewDeleteResult { status: 'DELETED'; batch_id: number; }
+
+export interface PaymentChannelMasterItem {
+  sic_code: string;
+  channel_name: string;
+  is_active: number;
+  aggregate_rows: number;
+  total_trx: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaymentChannelMasterList {
+  items: PaymentChannelMasterItem[];
+  unmapped_sic_count: number;
+  pagination: PaginationMeta;
+}
+
+export interface PaymentChannelChangeHistory {
+  id: number;
+  action: string;
+  old_channel_name: string | null;
+  new_channel_name: string | null;
+  old_is_active: number | null;
+  new_is_active: number | null;
+  changed_by: string | null;
+  created_at: string;
+}
