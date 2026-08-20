@@ -25,6 +25,48 @@ CREATE TABLE IF NOT EXISTS merchants (
   UNIQUE KEY uq_merchants_name (merchant_name)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS roles (
+  id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  code VARCHAR(50) NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  description VARCHAR(255) NOT NULL DEFAULT '',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_roles_code (code)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  public_id CHAR(36) NOT NULL,
+  username VARCHAR(50) NOT NULL,
+  email VARCHAR(190) NULL,
+  full_name VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role_id SMALLINT UNSIGNED NOT NULL COMMENT 'FK -> roles.id',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  must_change_password TINYINT(1) NOT NULL DEFAULT 1,
+  session_version INT UNSIGNED NOT NULL DEFAULT 1,
+  last_login_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_users_public_id (public_id),
+  UNIQUE KEY uq_users_username (username),
+  UNIQUE KEY uq_users_email (email),
+  KEY idx_users_role_active (role_id, is_active),
+  CONSTRAINT fk_users_role FOREIGN KEY (role_id) REFERENCES roles (id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  attempt_key CHAR(64) NOT NULL,
+  attempted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_login_attempts_key_time (attempt_key, attempted_at),
+  KEY idx_login_attempts_time (attempted_at)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS import_batches (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   merchant_id BIGINT UNSIGNED NULL COMMENT 'FK -> merchants.id',
@@ -44,6 +86,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
   confirmation_token_hash CHAR(64) NULL,
   confirmation_expires_at DATETIME NULL,
   imported_by VARCHAR(100) NULL,
+  imported_by_user_id BIGINT UNSIGNED NULL COMMENT 'FK -> users.id',
   confirmed_at DATETIME NULL,
   completed_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -53,6 +96,8 @@ CREATE TABLE IF NOT EXISTS import_batches (
   KEY idx_import_batches_type_status (data_type, status),
   KEY idx_import_batches_preview_cleanup (data_type, status, created_at),
   KEY idx_import_batches_period (detected_period_start, detected_period_end),
+  KEY idx_import_batches_imported_by_user (imported_by_user_id),
+  CONSTRAINT fk_import_batches_imported_by_user FOREIGN KEY (imported_by_user_id) REFERENCES users (id) ON DELETE SET NULL,
   CONSTRAINT fk_import_batches_merchant FOREIGN KEY (merchant_id) REFERENCES merchants (id)
 ) ENGINE=InnoDB;
 
@@ -94,12 +139,15 @@ CREATE TABLE IF NOT EXISTS payment_channel_change_history (
   old_is_active TINYINT(1) NULL,
   new_is_active TINYINT(1) NULL,
   changed_by VARCHAR(100) NULL,
+  changed_by_user_id BIGINT UNSIGNED NULL COMMENT 'FK -> users.id',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_payment_channel_history_sic (sic_code, created_at),
   KEY idx_payment_channel_history_batch (source_batch_id),
+  KEY idx_payment_channel_history_changed_by_user (changed_by_user_id),
   CONSTRAINT fk_payment_channel_history_sic FOREIGN KEY (sic_code) REFERENCES payment_channels (sic_code),
   CONSTRAINT fk_payment_channel_history_batch FOREIGN KEY (source_batch_id) REFERENCES import_batches (id)
+  ,CONSTRAINT fk_payment_channel_history_changed_by_user FOREIGN KEY (changed_by_user_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS transaction_aggregates (
@@ -160,12 +208,15 @@ CREATE TABLE IF NOT EXISTS transaction_change_history (
   old_data JSON NOT NULL,
   new_data JSON NOT NULL,
   confirmed_by VARCHAR(100) NULL,
+  confirmed_by_user_id BIGINT UNSIGNED NULL COMMENT 'FK -> users.id',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_transaction_history_target (transaction_id, created_at),
   KEY idx_transaction_history_batch (batch_id),
+  KEY idx_transaction_history_confirmed_by_user (confirmed_by_user_id),
   CONSTRAINT fk_transaction_history_target FOREIGN KEY (transaction_id) REFERENCES transaction_aggregates (id),
-  CONSTRAINT fk_transaction_history_batch FOREIGN KEY (batch_id) REFERENCES import_batches (id)
+  CONSTRAINT fk_transaction_history_batch FOREIGN KEY (batch_id) REFERENCES import_batches (id),
+  CONSTRAINT fk_transaction_history_confirmed_by_user FOREIGN KEY (confirmed_by_user_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS complaint_tickets (
@@ -229,12 +280,15 @@ CREATE TABLE IF NOT EXISTS incidents (
   source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL',
   source_ticket_id BIGINT UNSIGNED NULL COMMENT 'FK -> complaint_tickets.id',
   created_by VARCHAR(100) NULL,
+  created_by_user_id BIGINT UNSIGNED NULL COMMENT 'FK -> users.id',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_incidents_period (merchant_id, report_period),
+  KEY idx_incidents_created_by_user (created_by_user_id),
   CONSTRAINT fk_incidents_merchant FOREIGN KEY (merchant_id) REFERENCES merchants (id),
-  CONSTRAINT fk_incidents_ticket FOREIGN KEY (source_ticket_id) REFERENCES complaint_tickets (id)
+  CONSTRAINT fk_incidents_ticket FOREIGN KEY (source_ticket_id) REFERENCES complaint_tickets (id),
+  CONSTRAINT fk_incidents_created_by_user FOREIGN KEY (created_by_user_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS report_runs (
@@ -249,13 +303,16 @@ CREATE TABLE IF NOT EXISTS report_runs (
   options_json JSON NULL,
   failure_message VARCHAR(1000) NULL,
   generated_by VARCHAR(100) NULL,
+  generated_by_user_id BIGINT UNSIGNED NULL COMMENT 'FK -> users.id',
   generated_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_report_runs_period (merchant_id, report_period),
   KEY idx_report_runs_status (status),
-  CONSTRAINT fk_report_runs_merchant FOREIGN KEY (merchant_id) REFERENCES merchants (id)
+  KEY idx_report_runs_generated_by_user (generated_by_user_id),
+  CONSTRAINT fk_report_runs_merchant FOREIGN KEY (merchant_id) REFERENCES merchants (id),
+  CONSTRAINT fk_report_runs_generated_by_user FOREIGN KEY (generated_by_user_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 INSERT INTO schema_migrations (version, description)
@@ -268,7 +325,14 @@ VALUES
   ('20260820_006', 'Document foreign key source columns'),
   ('20260820_007', 'Index expired transaction preview cleanup'),
   ('20260820_008', 'Add payment channel change history')
+  ,('20260820_009', 'Add authentication, roles, users, login attempts, and user audit foreign keys')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
+
+INSERT INTO roles (code, name, description) VALUES
+  ('super_admin', 'Super Admin', 'Akses penuh termasuk pengelolaan pengguna.'),
+  ('admin', 'Admin', 'Mengimpor data, mengelola master data, dan membuat laporan.'),
+  ('viewer', 'Viewer', 'Akses baca dashboard, laporan, dan ringkasan riwayat import.')
+ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description);
 
 INSERT INTO response_code_rules
   (response_code, transaction_type, status_group, description, effective_from, is_active)

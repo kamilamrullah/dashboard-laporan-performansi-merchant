@@ -1,4 +1,5 @@
 import type { DashboardData, DashboardFiltersState } from '../types';
+import { apiFetch } from './apiClient';
 
 // Mengambil data agregasi dashboard dari API menggunakan filter yang sedang aktif.
 export async function fetchDashboard(filters: DashboardFiltersState, signal?: AbortSignal): Promise<DashboardData> {
@@ -11,9 +12,8 @@ export async function fetchDashboard(filters: DashboardFiltersState, signal?: Ab
   mapping.forEach(([stateKey, queryKey]) => {
     if (filters[stateKey]) parameters.set(queryKey, filters[stateKey]);
   });
-  const response = await fetch(`/api/dashboard.php?${parameters.toString()}`, { signal, headers: { Accept: 'application/json' } });
+  const response = await apiFetch(`/api/dashboard.php?${parameters.toString()}`, { signal, headers: { Accept: 'application/json' } });
   const payload = await response.json() as DashboardData & { error?: string };
   if (!response.ok) throw new Error(payload.error ?? 'Data dashboard gagal dimuat.');
   return payload;
 }
-

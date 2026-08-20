@@ -1,0 +1,12 @@
+import { useState } from 'react';
+import { KeyRound, LoaderCircle, X } from 'lucide-react';
+import { changePassword } from '../services/authApi';
+
+interface Props { open: boolean; onClose: () => void; onSessionEnded: () => void; }
+
+// Menyediakan perubahan password mandiri dari menu profil dan mengakhiri session lama.
+export function ChangePasswordModal({ open, onClose, onSessionEnded }: Props) {
+  const [current, setCurrent] = useState(''); const [next, setNext] = useState(''); const [confirmation, setConfirmation] = useState(''); const [error, setError] = useState<string | null>(null); const [loading, setLoading] = useState(false);
+  if (!open) return null;
+  return <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4"><form onSubmit={(event) => { event.preventDefault(); setLoading(true); setError(null); void changePassword(current, next, confirmation).then(onSessionEnded).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Password gagal diubah.')).finally(() => setLoading(false)); }} className="w-full max-w-md rounded-2xl bg-white shadow-2xl"><header className="flex items-center justify-between border-b p-5"><div className="flex items-center gap-3"><span className="rounded-xl bg-amber-100 p-2 text-amber-700"><KeyRound className="h-5 w-5"/></span><h2 className="font-bold">Ganti Password</h2></div><button type="button" onClick={onClose}><X className="h-5 w-5"/></button></header><div className="space-y-4 p-5">{error && <div className="rounded-xl bg-rose-50 p-3 text-xs text-rose-700">{error}</div>}{[['Password saat ini', current, setCurrent], ['Password baru', next, setNext], ['Konfirmasi password baru', confirmation, setConfirmation]].map(([label, value, setter]) => <label key={label as string} className="block text-xs font-bold">{label as string}<input required minLength={label === 'Password saat ini' ? undefined : 8} type="password" value={value as string} onChange={(event) => (setter as (value: string) => void)(event.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm"/></label>)}</div><footer className="flex justify-end gap-2 border-t bg-slate-50 p-4"><button type="button" onClick={onClose} className="rounded-xl border px-4 py-2.5 text-xs font-bold">Batal</button><button disabled={loading} className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white">{loading && <LoaderCircle className="h-4 w-4 animate-spin"/>}Simpan</button></footer></form></div>;
+}

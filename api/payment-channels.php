@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/auth-support.php';
 require_once __DIR__ . '/../backend/MasterData/PaymentChannelService.php';
 
 use App\MasterData\PaymentChannelService;
@@ -26,7 +27,9 @@ function payment_channel_integer_parameter(string $name, int $default, int $maxi
 }
 
 try {
-    $service = new PaymentChannelService(database_connection());
+    $isMutation = $_SERVER['REQUEST_METHOD'] === 'POST';
+    [$database, $user] = authorize_api_request(['super_admin', 'admin', ...($isMutation ? [] : ['viewer'])], $isMutation);
+    $service = new PaymentChannelService($database);
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $historySic = trim((string) ($_GET['history_sic_code'] ?? ''));
         if ($historySic !== '') json_response($service->history($historySic));
@@ -36,7 +39,7 @@ try {
     if (stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json') !== 0) json_response(['error' => 'Content-Type harus application/json.'], 415);
     $payload = payment_channel_request_payload();
     $action = (string) ($payload['action'] ?? '');
-    json_response($service->mutate($action, $payload), $action === 'create' ? 201 : 200);
+    json_response($service->mutate($action, $payload, (int) $user['id']), $action === 'create' ? 201 : 200);
 } catch (RuntimeException $error) {
     json_response(['error' => $error->getMessage()], 422);
 } catch (Throwable $error) {

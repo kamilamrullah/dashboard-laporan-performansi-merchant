@@ -1,4 +1,5 @@
 import type { TransactionImportBatchDetail, TransactionImportHistory, TransactionImportPreview, TransactionImportPreviewPage, TransactionImportResult, TransactionImportOutcome, TransactionPreviewDeleteResult } from '../types';
+import { apiFetch } from './apiClient';
 
 interface ApiErrorPayload { error?: string; message?: string; }
 const previewTokenPrefix = 'transaction-import-preview-token:';
@@ -21,13 +22,13 @@ export async function previewTransactionImport(file: File, merchantId: number | 
   form.append('file', file);
   if (merchantId !== null) form.append('merchant_id', String(merchantId));
   if (newMerchantName !== null) form.append('new_merchant_name', newMerchantName);
-  const response = await fetch('/api/transaction-import-preview.php', { method: 'POST', body: form, headers: { Accept: 'application/json' } });
+  const response = await apiFetch('/api/transaction-import-preview.php', { method: 'POST', body: form, headers: { Accept: 'application/json' } });
   return parseResponse<TransactionImportPreview>(response, 'Preview transaksi gagal diproses.');
 }
 
 // Mengonfirmasi batch preview dengan pilihan memperbarui atau melewati data yang berubah.
 export async function confirmTransactionImport(preview: TransactionImportPreview, changedRowsAction: 'skip' | 'update'): Promise<TransactionImportResult> {
-  const response = await fetch('/api/transaction-import-confirm.php', {
+  const response = await apiFetch('/api/transaction-import-confirm.php', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, changed_rows_action: changedRowsAction }),
@@ -37,7 +38,7 @@ export async function confirmTransactionImport(preview: TransactionImportPreview
 
 // Mengambil halaman staging preview menggunakan token dalam body agar tidak tercatat pada URL server.
 export async function fetchTransactionPreviewRows(preview: TransactionImportPreview, page: number, outcome: TransactionImportOutcome | ''): Promise<TransactionImportPreviewPage> {
-  const response = await fetch('/api/transaction-import-preview-rows.php', {
+  const response = await apiFetch('/api/transaction-import-preview-rows.php', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ batch_id: preview.batch_id, confirmation_token: preview.confirmation_token, page, per_page: 50, outcome }),
@@ -62,7 +63,7 @@ export function clearTransactionPreviewToken(batchId: number): void {
 
 // Menghapus preview terautentikasi tanpa menyentuh transaksi dari batch completed.
 export async function deleteTransactionPreview(batchId: number, token: string): Promise<TransactionPreviewDeleteResult> {
-  const response = await fetch('/api/transaction-import-preview-delete.php', {
+  const response = await apiFetch('/api/transaction-import-preview-delete.php', {
     method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ batch_id: batchId, confirmation_token: token }),
   });
@@ -72,13 +73,13 @@ export async function deleteTransactionPreview(batchId: number, token: string): 
 // Mengambil daftar batch transaksi terbaru dengan pagination untuk halaman riwayat.
 export async function fetchTransactionImportHistory(page: number, signal?: AbortSignal): Promise<TransactionImportHistory> {
   const parameters = new URLSearchParams({ page: String(page), per_page: '20' });
-  const response = await fetch(`/api/transaction-import-history.php?${parameters}`, { signal, headers: { Accept: 'application/json' } });
+  const response = await apiFetch(`/api/transaction-import-history.php?${parameters}`, { signal, headers: { Accept: 'application/json' } });
   return parseResponse<TransactionImportHistory>(response, 'Riwayat import transaksi gagal dimuat.');
 }
 
 // Mengambil metadata dan halaman detail baris dari satu batch import transaksi.
 export async function fetchTransactionImportBatch(batchId: number, page: number, signal?: AbortSignal): Promise<TransactionImportBatchDetail> {
   const parameters = new URLSearchParams({ batch_id: String(batchId), page: String(page), per_page: '50' });
-  const response = await fetch(`/api/transaction-import-history.php?${parameters}`, { signal, headers: { Accept: 'application/json' } });
+  const response = await apiFetch(`/api/transaction-import-history.php?${parameters}`, { signal, headers: { Accept: 'application/json' } });
   return parseResponse<TransactionImportBatchDetail>(response, 'Detail batch transaksi gagal dimuat.');
 }

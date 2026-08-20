@@ -44,29 +44,29 @@ final class PaymentChannelService
     public function history(string $sicCode): array
     {
         $sicCode = $this->normalizeSic($sicCode);
-        $statement = $this->database->prepare('SELECT id, action, old_channel_name, new_channel_name, old_is_active, new_is_active, changed_by, created_at FROM payment_channel_change_history WHERE sic_code = :sic_code ORDER BY id DESC LIMIT 100');
+        $statement = $this->database->prepare('SELECT h.id, h.action, h.old_channel_name, h.new_channel_name, h.old_is_active, h.new_is_active, COALESCE(u.full_name, h.changed_by) changed_by, h.created_at FROM payment_channel_change_history h LEFT JOIN users u ON u.id = h.changed_by_user_id WHERE h.sic_code = :sic_code ORDER BY h.id DESC LIMIT 100');
         $statement->execute(['sic_code' => $sicCode]);
         return ['sic_code' => $sicCode, 'items' => $statement->fetchAll()];
     }
 
     /** Menjalankan aksi penambahan atau perubahan status dari payload tervalidasi. */
-    public function mutate(string $action, array $payload): array
+    public function mutate(string $action, array $payload, ?int $changedByUserId = null): array
     {
         return match ($action) {
-            'create' => $this->create($payload),
-            'set_active' => $this->setActive($payload), default => throw new RuntimeException('Aksi payment channel tidak valid.'),
+            'create' => $this->create($payload, $changedByUserId),
+            'set_active' => $this->setActive($payload, $changedByUserId), default => throw new RuntimeException('Aksi payment channel tidak valid.'),
         };
     }
 
     /** Membuat mapping baru dan audit CREATED dalam satu database transaction. */
-    private function create(array $payload): array
+    private function create(array $payload, ?int $changedByUserId): array
     {
         $sicCode = $this->normalizeSic($payload['sic_code'] ?? null); $name = $this->normalizeName($payload['channel_name'] ?? null);
         $this->database->beginTransaction();
         try {
             $statement = $this->database->prepare('INSERT INTO payment_channels (sic_code, channel_name, is_active) VALUES (:sic_code, :channel_name, 1)');
             $statement->execute(['sic_code' => $sicCode, 'channel_name' => $name]);
-            $new = ['channel_name' => $name, 'is_active' => 1]; $this->recordChange($sicCode, 'CREATED', null, $new);
+            $new = ['channel_name' => $name, 'is_active' => 1]; $this->recordChange($sicCode, 'CREATED', null, $new, $changedByUserId);
             $this->database->commit(); return ['status' => 'CREATED', 'item' => ['sic_code' => $sicCode, ...$new]];
         } catch (PDOException $error) {
             if ($this->database->inTransaction()) $this->database->rollBack();
@@ -76,7 +76,7 @@ final class PaymentChannelService
     }
 
     /** Mengaktifkan atau menonaktifkan mapping secara reversible dan mencatat audit status. */
-    private function setActive(array $payload): array
+    private function setActive(array $payload, ?int $changedByUserId): array
     {
         $sicCode = $this->normalizeSic($payload['sic_code'] ?? null);
         if (!array_key_exists('is_active', $payload) || !is_bool($payload['is_active'])) throw new RuntimeException('Status aktif harus berupa boolean.');
@@ -86,7 +86,7 @@ final class PaymentChannelService
             if ((int) $old['is_active'] !== $isActive) {
                 $statement = $this->database->prepare('UPDATE payment_channels SET is_active = :is_active WHERE sic_code = :sic_code');
                 $statement->execute(['is_active' => $isActive, 'sic_code' => $sicCode]);
-                $this->recordChange($sicCode, $isActive === 1 ? 'ACTIVATED' : 'DEACTIVATED', $old, ['channel_name' => $old['channel_name'], 'is_active' => $isActive]);
+                $this->recordChange($sicCode, $isActive === 1 ? 'ACTIVATED' : 'DEACTIVATED', $old, ['channel_name' => $old['channel_name'], 'is_active' => $isActive], $changedByUserId);
             }
             $this->database->commit(); return ['status' => 'UPDATED', 'item' => ['sic_code' => $sicCode, 'channel_name' => $old['channel_name'], 'is_active' => $isActive]];
         } catch (Throwable $error) { if ($this->database->inTransaction()) $this->database->rollBack(); throw $error; }
@@ -102,10 +102,10 @@ final class PaymentChannelService
     }
 
     /** Menyimpan satu catatan audit perubahan master payment channel. */
-    private function recordChange(string $sicCode, string $action, ?array $old, ?array $new): void
+    private function recordChange(string $sicCode, string $action, ?array $old, ?array $new, ?int $changedByUserId): void
     {
-        $statement = $this->database->prepare('INSERT INTO payment_channel_change_history (sic_code, action, old_channel_name, new_channel_name, old_is_active, new_is_active, changed_by) VALUES (:sic_code, :action, :old_name, :new_name, :old_active, :new_active, NULL)');
-        $statement->execute(['sic_code' => $sicCode, 'action' => $action, 'old_name' => $old['channel_name'] ?? null, 'new_name' => $new['channel_name'] ?? null, 'old_active' => isset($old['is_active']) ? (int) $old['is_active'] : null, 'new_active' => isset($new['is_active']) ? (int) $new['is_active'] : null]);
+        $statement = $this->database->prepare('INSERT INTO payment_channel_change_history (sic_code, action, old_channel_name, new_channel_name, old_is_active, new_is_active, changed_by, changed_by_user_id) VALUES (:sic_code, :action, :old_name, :new_name, :old_active, :new_active, NULL, :user_id)');
+        $statement->execute(['sic_code' => $sicCode, 'action' => $action, 'old_name' => $old['channel_name'] ?? null, 'new_name' => $new['channel_name'] ?? null, 'old_active' => isset($old['is_active']) ? (int) $old['is_active'] : null, 'new_active' => isset($new['is_active']) ? (int) $new['is_active'] : null, 'user_id' => $changedByUserId]);
     }
 
     /** Menormalisasi SIC code sebagai identifier tanpa menghilangkan leading zero. */

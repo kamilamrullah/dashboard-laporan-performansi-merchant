@@ -101,14 +101,14 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     assert_integration($secondPage['pagination']['total'] === 3 && count($secondPage['items']) === 1, 'Pagination preview tidak mengembalikan halaman yang benar.');
     $invalidPage = $importer->previewRows((int) $preview['batch_id'], (string) $preview['confirmation_token'], 1, 50, 'INVALID');
     assert_integration($invalidPage['pagination']['total'] === 1 && $invalidPage['items'][0]['outcome'] === 'INVALID', 'Filter outcome preview tidak bekerja.');
-    $result = $importer->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, 'Integration Test');
+    $result = $importer->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, null);
     assert_integration($result['inserted'] === 1 && $result['duplicate'] === 1 && $result['rejected'] === 1, 'Statistik konfirmasi pertama tidak sesuai.');
     assert_integration((string) scalar($database, 'SELECT total_amount FROM transaction_aggregates LIMIT 1') === '123456789012345678.12', 'Nominal besar berubah saat disimpan ke database.');
 
     $duplicateFileResult = $importer->preview($firstFile, 'renamed.xlsx', 'TEST-MERCHANT', 'Test Merchant');
     assert_integration($duplicateFileResult['status'] === 'IDENTICAL_FILE', 'File completed identik harus ditolak meskipun nama berubah.');
     try {
-        $importer->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, 'Integration Test');
+        $importer->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, null);
         throw new RuntimeException('Konfirmasi kedua seharusnya ditolak.');
     } catch (RuntimeException $error) {
         assert_integration($error->getMessage() === 'Batch tidak lagi dapat dikonfirmasi.', 'Alasan penolakan konfirmasi kedua tidak sesuai.');
@@ -118,7 +118,7 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     $fixtures[] = $changedFile = TransactionWorkbookFactory::create([$changed], 'changed-import');
     $changedPreview = $importer->preview($changedFile, 'changed.xlsx', 'TEST-MERCHANT', 'Test Merchant');
     assert_integration($changedPreview['summary']['changed'] === 1, 'Perubahan total transaksi tidak terdeteksi.');
-    $changedResult = $importer->confirm((int) $changedPreview['batch_id'], (string) $changedPreview['confirmation_token'], true, 'Integration Test');
+    $changedResult = $importer->confirm((int) $changedPreview['batch_id'], (string) $changedPreview['confirmation_token'], true, null);
     assert_integration($changedResult['updated'] === 1, 'Baris berubah tidak diperbarui.');
     assert_integration((int) scalar($database, 'SELECT COUNT(*) FROM transaction_change_history') === 1, 'Riwayat perubahan tidak tersimpan.');
 
@@ -151,7 +151,7 @@ function run_importer_scenarios(PDO $database, array &$fixtures): void
     $fixtures[] = $rollbackFile = TransactionWorkbookFactory::create($rollbackRows, 'rollback-import');
     $rollbackPreview = $importer->preview($rollbackFile, 'rollback.xlsx', 'TEST-MERCHANT', 'Test Merchant');
     try {
-        $importer->confirm((int) $rollbackPreview['batch_id'], (string) $rollbackPreview['confirmation_token'], false, 'Integration Test');
+        $importer->confirm((int) $rollbackPreview['batch_id'], (string) $rollbackPreview['confirmation_token'], false, null);
         throw new RuntimeException('Trigger test seharusnya menggagalkan konfirmasi.');
     } catch (PDOException $error) {
         assert_integration(str_contains($error->getMessage(), 'Forced integration rollback'), 'Kegagalan rollback tidak berasal dari trigger test.');

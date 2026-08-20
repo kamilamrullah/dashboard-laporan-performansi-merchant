@@ -11,7 +11,13 @@ import { PerformanceChart } from './components/PerformanceChart';
 import { PaymentChannelMaster } from './components/PaymentChannelMaster';
 import { ReportPanel } from './components/ReportPanel';
 import { TransactionStatusChart } from './components/TransactionStatusChart';
+import { ChangePasswordPage } from './components/ChangePasswordPage';
+import { LoginPage } from './components/LoginPage';
+import { UserManagementPage } from './components/UserManagementPage';
 import { fetchDashboard } from './services/dashboardApi';
+import { changePassword, fetchAuthSession, login, logout, type AuthUser } from './services/authApi';
+import { setUnauthorizedHandler } from './services/apiClient';
+import { AuthContext } from './auth/AuthContext';
 import type { DashboardData, DashboardFiltersState } from './types';
 
 type ActiveModal = 'transactions' | 'tickets' | 'report' | 'payment-channels' | null;
@@ -26,6 +32,24 @@ function formatNumber(value: string): string { return Number(value).toLocaleStri
 // Mengubah nominal database menjadi mata uang Rupiah utuh.
 function formatCurrency(value: string): string {
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(Number(value));
+}
+
+// Mengendalikan bootstrap session dan mencegah dashboard dirender sebelum autentikasi selesai.
+export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [page, setPage] = useState<'dashboard' | 'users'>('dashboard');
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUser(null));
+    void fetchAuthSession().then((session) => setUser(session.user)).finally(() => setChecking(false));
+    return () => setUnauthorizedHandler(null);
+  }, []);
+  if (checking) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm font-semibold text-white"><RefreshCw className="mr-2 h-4 w-4 animate-spin"/>Memeriksa sesi...</div>;
+  if (!user) return <LoginPage onLogin={async (loginValue, password) => { const session = await login(loginValue, password); setUser(session.user); }}/>;
+  if (user.must_change_password) return <ChangePasswordPage fullName={user.full_name} onChange={async (current, next, confirmation) => { await changePassword(current, next, confirmation); setUser(null); }}/>;
+  const handleLogout = async () => { await logout(); setUser(null); };
+  const content = page === 'users' && user.role === 'super_admin' ? <UserManagementPage onBack={() => setPage('dashboard')}/> : <DashboardApp user={user} onLogout={handleLogout}/>;
+  return <AuthContext.Provider value={{ user, logout: handleLogout, openUserManagement: () => setPage('users') }}>{content}</AuthContext.Provider>;
 }
 
 // Menentukan rentang bulan terbaru yang benar-benar tersedia di database.
@@ -68,7 +92,7 @@ function DashboardView({ data, filters, isRefreshing, onFilterChange, onReset, o
 }
 
 // Mengelola pengambilan data dashboard, filter global, dan modal pekerjaan pengguna.
-export default function App() {
+function DashboardApp({ user, onLogout }: { user: AuthUser; onLogout: () => Promise<void> }) {
   const [activeModal, setActiveModal] = useState<ActiveModal>(null);
   const [filters, setFilters] = useState<DashboardFiltersState>(initialFilters);
   const [data, setData] = useState<DashboardData | null>(null);
