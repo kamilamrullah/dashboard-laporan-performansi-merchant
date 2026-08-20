@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/auth-support.php';
 
 /** Membaca parameter integer positif dengan batas minimum dan maksimum yang ditentukan. */
 function history_integer_parameter(string $name, int $default, int $minimum, int $maximum): int
@@ -33,10 +34,11 @@ function transaction_batch_list(PDO $database, int $page, int $perPage): array
     $statement = $database->prepare(
         "SELECT b.id, b.original_filename, b.status, b.detected_period_start, b.detected_period_end,
                 b.total_rows, b.valid_rows, b.inserted_rows, b.updated_rows, b.duplicate_rows, b.rejected_rows,
-                b.imported_by, b.confirmation_expires_at, b.confirmed_at, b.completed_at, b.created_at,
+                COALESCE(u.full_name, b.imported_by) imported_by, b.confirmation_expires_at, b.confirmed_at, b.completed_at, b.created_at,
                 m.id merchant_id, m.merchant_name
          FROM import_batches b
          LEFT JOIN merchants m ON m.id = b.merchant_id
+         LEFT JOIN users u ON u.id = b.imported_by_user_id
          WHERE b.data_type = 'TRANSACTION'
          ORDER BY b.created_at DESC, b.id DESC LIMIT :limit OFFSET :offset"
     );
@@ -52,9 +54,10 @@ function transaction_batch(PDO $database, int $batchId): array
     $statement = $database->prepare(
         "SELECT b.id, b.original_filename, b.file_sha256, b.status, b.detected_period_start, b.detected_period_end,
                 b.total_rows, b.valid_rows, b.inserted_rows, b.updated_rows, b.duplicate_rows, b.rejected_rows,
-                b.failure_message, b.imported_by, b.confirmation_expires_at, b.confirmed_at, b.completed_at, b.created_at,
+                b.failure_message, COALESCE(u.full_name, b.imported_by) imported_by, b.confirmation_expires_at, b.confirmed_at, b.completed_at, b.created_at,
                 m.id merchant_id, m.merchant_name
          FROM import_batches b LEFT JOIN merchants m ON m.id = b.merchant_id
+         LEFT JOIN users u ON u.id = b.imported_by_user_id
          WHERE b.id = :id AND b.data_type = 'TRANSACTION' LIMIT 1"
     );
     $statement->execute(['id' => $batchId]);
@@ -111,13 +114,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 try {
-    $database = database_connection();
+    [$database, $user] = authorize_api_request(['super_admin', 'admin', 'viewer']);
     $page = history_integer_parameter('page', 1, 1, 1000000);
     $perPage = history_integer_parameter('per_page', 20, 1, 100);
     $batchIdRaw = $_GET['batch_id'] ?? null;
     if ($batchIdRaw === null || $batchIdRaw === '') {
         json_response(transaction_batch_list($database, $page, $perPage));
     }
+    if ((string) $user['role'] === 'viewer') json_response(['error' => 'Viewer hanya dapat melihat ringkasan riwayat import.'], 403);
     $batchId = filter_var($batchIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     if ($batchId === false) json_response(['error' => 'Parameter batch_id tidak valid.'], 422);
     json_response(['batch' => transaction_batch($database, (int) $batchId), 'summary' => transaction_batch_summary($database, (int) $batchId), 'rows' => transaction_batch_rows($database, (int) $batchId, $page, $perPage)]);

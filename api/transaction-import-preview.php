@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/auth-support.php';
 require_once __DIR__ . '/../backend/Import/TransactionWorkbookReader.php';
 require_once __DIR__ . '/../backend/Import/TransactionImporter.php';
 
@@ -65,8 +66,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 try {
+    [$database] = authorize_api_request(['super_admin', 'admin'], true);
     $upload = transaction_upload();
-    $database = database_connection();
     [$merchantCode, $merchantName] = resolve_merchant_selection($database);
     $importer = new TransactionImporter($database, new TransactionWorkbookReader());
     try {

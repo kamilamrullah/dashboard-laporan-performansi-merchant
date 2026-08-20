@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/auth-support.php';
 require_once __DIR__ . '/../backend/Import/TransactionWorkbookReader.php';
 require_once __DIR__ . '/../backend/Import/TransactionImporter.php';
 
@@ -50,9 +51,10 @@ if (stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json') !== 0
 }
 
 try {
+    [$database, $user] = authorize_api_request(['super_admin', 'admin'], true);
     [$batchId, $token, $updateChangedRows] = validate_confirmation_payload(confirmation_payload());
-    $importer = new TransactionImporter(database_connection(), new TransactionWorkbookReader());
-    json_response($importer->confirm($batchId, $token, $updateChangedRows, null));
+    $importer = new TransactionImporter($database, new TransactionWorkbookReader());
+    json_response($importer->confirm($batchId, $token, $updateChangedRows, (int) $user['id']));
 } catch (RuntimeException $error) {
     json_response(['error' => $error->getMessage()], 422);
 } catch (Throwable $error) {

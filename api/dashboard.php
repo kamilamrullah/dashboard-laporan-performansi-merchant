@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/auth-support.php';
 
 /** Memvalidasi parameter tanggal ISO dan mengembalikan null ketika tidak diberikan. */
 function date_parameter(string $name): ?string
@@ -81,7 +82,7 @@ function fetch_one(PDO $database, string $sql, array $parameters = []): array
 }
 
 try {
-    $database = database_connection();
+    [$database] = authorize_api_request(['super_admin', 'admin', 'viewer']);
     [$where, $parameters] = dashboard_filters();
     $join = ' FROM transaction_aggregates t JOIN merchants m ON m.id = t.merchant_id LEFT JOIN payment_channels pc ON pc.sic_code = t.sic_code ';
     $successCondition = "EXISTS (

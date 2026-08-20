@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/auth-support.php';
 require_once __DIR__ . '/../backend/Import/TransactionWorkbookReader.php';
 require_once __DIR__ . '/../backend/Import/TransactionImporter.php';
 
@@ -34,8 +35,9 @@ if (stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json') !== 0
 }
 
 try {
+    [$database] = authorize_api_request(['super_admin', 'admin'], true);
     [$batchId, $token] = delete_preview_payload();
-    $importer = new TransactionImporter(database_connection(), new TransactionWorkbookReader());
+    $importer = new TransactionImporter($database, new TransactionWorkbookReader());
     json_response($importer->deletePreview($batchId, $token));
 } catch (RuntimeException $error) {
     json_response(['error' => $error->getMessage()], 422);

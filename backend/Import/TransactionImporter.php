@@ -55,13 +55,13 @@ final class TransactionImporter
     }
 
     /** Mengonfirmasi batch preview dan menerapkan insert serta perubahan yang secara eksplisit disetujui. */
-    public function confirm(int $batchId, string $token, bool $updateChangedRows, ?string $confirmedBy = null): array
+    public function confirm(int $batchId, string $token, bool $updateChangedRows, ?int $confirmedByUserId = null): array
     {
         $this->database->beginTransaction();
         try {
             $batch = $this->lockPreviewBatch($batchId);
             $this->validateConfirmation($batch, $token);
-            $this->markBatchProcessing($batchId, $confirmedBy);
+            $this->markBatchProcessing($batchId, $confirmedByUserId);
             $rows = $this->loadStagedRows($batchId);
             $stats = ['inserted' => 0, 'updated' => 0, 'duplicate' => 0, 'rejected' => 0];
             foreach ($rows as $stagedRow) {
@@ -69,7 +69,7 @@ final class TransactionImporter
                 if ($outcome === 'READY') {
                     $result = $this->insertReadyRow((int) $batch['merchant_id'], $batchId, $stagedRow);
                 } elseif ($outcome === 'CHANGED' && $updateChangedRows) {
-                    $result = $this->updateChangedRow((int) $batch['merchant_id'], $batchId, $stagedRow, $confirmedBy);
+                    $result = $this->updateChangedRow((int) $batch['merchant_id'], $batchId, $stagedRow, $confirmedByUserId);
                 } elseif ($outcome === 'CHANGED') {
                     $result = 'SKIPPED_CHANGE';
                     $this->updateStagedOutcome((int) $stagedRow['id'], $result, $stagedRow['transaction_id'] === null ? null : (int) $stagedRow['transaction_id']);
@@ -195,7 +195,7 @@ final class TransactionImporter
         }
         $preview = $this->preview($filePath, basename($filePath), $merchantCode, $merchantName);
         if ($preview['status'] !== 'PREVIEWED') return $preview;
-        return $this->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, 'CLI');
+        return $this->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, null);
     }
 
     /** Menyimpan mapping SIC code secara idempotent untuk mempertahankan kompatibilitas import CLI. */
@@ -345,10 +345,10 @@ final class TransactionImporter
     }
 
     /** Menandai batch sedang diproses dan menghapus token agar tidak dapat digunakan ulang. */
-    private function markBatchProcessing(int $batchId, ?string $confirmedBy): void
+    private function markBatchProcessing(int $batchId, ?int $confirmedByUserId): void
     {
-        $statement = $this->database->prepare("UPDATE import_batches SET status = 'PROCESSING', confirmed_at = NOW(), imported_by = :confirmed_by, confirmation_token_hash = NULL, confirmation_expires_at = NULL WHERE id = :id");
-        $statement->execute(['confirmed_by' => $confirmedBy, 'id' => $batchId]);
+        $statement = $this->database->prepare("UPDATE import_batches SET status = 'PROCESSING', confirmed_at = NOW(), imported_by = NULL, imported_by_user_id = :user_id, confirmation_token_hash = NULL, confirmation_expires_at = NULL WHERE id = :id");
+        $statement->execute(['user_id' => $confirmedByUserId, 'id' => $batchId]);
     }
 
     /** Memuat staging dalam urutan nomor baris untuk pemrosesan deterministik. */
@@ -373,7 +373,7 @@ final class TransactionImporter
     }
 
     /** Memperbarui konflik yang disetujui setelah memastikan data tidak berubah sejak preview. */
-    private function updateChangedRow(int $merchantId, int $batchId, array $stagedRow, ?string $confirmedBy): string
+    private function updateChangedRow(int $merchantId, int $batchId, array $stagedRow, ?int $confirmedByUserId): string
     {
         $row = $this->decodeJson((string) $stagedRow['normalized_data']); $previewExisting = $this->decodeJson((string) $stagedRow['existing_data']);
         $current = $this->findTransaction($merchantId, $row, true);
@@ -382,15 +382,15 @@ final class TransactionImporter
         }
         $statement = $this->database->prepare('UPDATE transaction_aggregates SET total_trx = :total_trx, total_amount = :total_amount, source_batch_id = :batch_id, source_row_number = :source_row_number WHERE id = :id');
         $statement->execute(['total_trx' => $row['total_trx'], 'total_amount' => $row['total_amount'], 'batch_id' => $batchId, 'source_row_number' => $row['source_row_number'], 'id' => $current['id']]);
-        $this->recordChangeHistory((int) $current['id'], $batchId, (int) $row['source_row_number'], $previewExisting, $row, $confirmedBy);
+        $this->recordChangeHistory((int) $current['id'], $batchId, (int) $row['source_row_number'], $previewExisting, $row, $confirmedByUserId);
         $this->updateStagedOutcome((int) $stagedRow['id'], 'UPDATED', (int) $current['id']); return 'UPDATED';
     }
 
     /** Menyimpan snapshot sebelum dan sesudah untuk audit perubahan transaksi. */
-    private function recordChangeHistory(int $transactionId, int $batchId, int $sourceRow, array $oldData, array $newData, ?string $confirmedBy): void
+    private function recordChangeHistory(int $transactionId, int $batchId, int $sourceRow, array $oldData, array $newData, ?int $confirmedByUserId): void
     {
-        $statement = $this->database->prepare('INSERT INTO transaction_change_history (transaction_id, batch_id, source_row_number, old_data, new_data, confirmed_by) VALUES (:transaction_id, :batch_id, :source_row, :old_data, :new_data, :confirmed_by)');
-        $statement->execute(['transaction_id' => $transactionId, 'batch_id' => $batchId, 'source_row' => $sourceRow, 'old_data' => $this->encodeJson($oldData), 'new_data' => $this->encodeJson($newData), 'confirmed_by' => $confirmedBy]);
+        $statement = $this->database->prepare('INSERT INTO transaction_change_history (transaction_id, batch_id, source_row_number, old_data, new_data, confirmed_by, confirmed_by_user_id) VALUES (:transaction_id, :batch_id, :source_row, :old_data, :new_data, NULL, :user_id)');
+        $statement->execute(['transaction_id' => $transactionId, 'batch_id' => $batchId, 'source_row' => $sourceRow, 'old_data' => $this->encodeJson($oldData), 'new_data' => $this->encodeJson($newData), 'user_id' => $confirmedByUserId]);
     }
 
     /** Memperbarui hasil akhir satu baris staging dan target transaksinya. */

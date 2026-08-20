@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, ChevronDown, CreditCard, FileOutput, FileSpreadsheet, Menu, Search, UploadCloud, WalletCards } from 'lucide-react';
+import { Bell, ChevronDown, CreditCard, FileOutput, FileSpreadsheet, KeyRound, LogOut, Menu, Search, UploadCloud, UsersRound, WalletCards } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { ChangePasswordModal } from './ChangePasswordModal';
 
 interface AppHeaderProps {
   onOpenImport: (type: 'transactions' | 'tickets') => void;
@@ -9,8 +11,11 @@ interface AppHeaderProps {
 
 // Menampilkan navbar responsif beserta dropdown aksi untuk import dan generate laporan.
 export function AppHeader({ onOpenImport, onOpenReport, onOpenPaymentChannels }: AppHeaderProps) {
+  const { user, logout, openUserManagement } = useAuth();
   const [isActionOpen, setIsActionOpen] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [isUserOpen, setIsUserOpen] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const actionRef = useRef<HTMLDivElement>(null);
 
   // Menutup dropdown aksi saat pengguna mengklik area lain atau menekan Escape.
@@ -44,7 +49,9 @@ export function AppHeader({ onOpenImport, onOpenReport, onOpenPaymentChannels }:
     { label: 'Import Tiket Aduan', note: 'Workbook data tiket', icon: UploadCloud, action: () => onOpenImport('tickets') },
     { label: 'Generate Laporan', note: 'Dokumen Microsoft Word', icon: FileOutput, action: onOpenReport },
     { label: 'Master Payment Channel', note: 'Mapping SIC code', icon: CreditCard, action: onOpenPaymentChannels },
-  ];
+    ...(user.role === 'super_admin' ? [{ label: 'Manajemen Pengguna', note: 'Kelola akun, role, dan password', icon: UsersRound, action: openUserManagement }] : []),
+  ].filter(() => user.role !== 'viewer');
+  const initials = user.full_name.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
 
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-xl">
@@ -63,17 +70,17 @@ export function AppHeader({ onOpenImport, onOpenReport, onOpenPaymentChannels }:
           <div className="hidden items-center gap-3 md:flex">
             <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
               <Search className="h-4 w-4 text-slate-400" />
-              <input aria-label="Cari data" placeholder="Cari data..." className="w-36 bg-transparent text-xs outline-none xl:w-52" />
+              <input aria-label="Cari data" placeholder="Cari data..." className="w-36 bg-transparent text-xs font-medium outline-none placeholder:text-slate-400 xl:w-52" />
             </label>
-            <div ref={actionRef} className="relative">
+            {user.role !== 'viewer' && <div ref={actionRef} className="relative">
               <button
                 type="button"
                 aria-haspopup="menu"
                 aria-expanded={isActionOpen}
                 onClick={() => setIsActionOpen((current) => !current)}
-                className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-indigo-200 transition hover:bg-indigo-700"
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700"
               >
-                <FileOutput className="h-4 w-4" /> Aksi
+                <FileOutput className="h-4 w-4" /> Menu
                 <ChevronDown className={`h-3.5 w-3.5 transition ${isActionOpen ? 'rotate-180' : ''}`} />
               </button>
               {isActionOpen && (
@@ -86,15 +93,15 @@ export function AppHeader({ onOpenImport, onOpenReport, onOpenPaymentChannels }:
                   ))}
                 </div>
               )}
-            </div>
+            </div>}
             <button aria-label="Notifikasi" className="relative rounded-xl border border-slate-200 p-2.5 text-slate-600 hover:bg-slate-50">
               <Bell className="h-4 w-4" /><span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-white bg-rose-500" />
             </button>
-            <button className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1.5 pr-2.5 hover:bg-slate-50">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-100 text-xs font-bold text-indigo-700">KA</span>
-              <span className="hidden text-left lg:block"><span className="block text-xs font-bold text-slate-800">Kamil</span><span className="block text-[10px] text-slate-400">Administrator</span></span>
-              <ChevronDown className="hidden h-3.5 w-3.5 text-slate-400 lg:block" />
-            </button>
+            <div className="relative"><button onClick={() => setIsUserOpen((value) => !value)} aria-expanded={isUserOpen} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1.5 pr-2.5 hover:bg-slate-50">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-100 text-xs font-bold text-indigo-700">{initials}</span>
+              <span className="hidden text-left lg:block"><span className="block text-xs font-bold text-slate-800">{user.full_name}</span><span className="block text-[10px] capitalize text-slate-400">{user.role.replace('_', ' ')}</span></span>
+              <ChevronDown className={`hidden h-3.5 w-3.5 text-slate-400 transition lg:block ${isUserOpen ? 'rotate-180' : ''}`} />
+            </button>{isUserOpen && <div className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl"><button onClick={() => { setIsUserOpen(false); setShowChangePassword(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold hover:bg-slate-50"><KeyRound className="h-4 w-4"/>Ganti Password</button><button onClick={() => void logout()} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold text-rose-600 hover:bg-rose-50"><LogOut className="h-4 w-4"/>Keluar</button></div>}</div>
           </div>
 
           <button onClick={() => setIsMobileOpen((current) => !current)} aria-label="Buka menu" aria-expanded={isMobileOpen} className="rounded-xl border border-slate-200 p-2.5 text-slate-600 md:hidden">
@@ -107,10 +114,13 @@ export function AppHeader({ onOpenImport, onOpenReport, onOpenPaymentChannels }:
             <label className="mb-2 flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5"><Search className="h-4 w-4 text-slate-400" /><input aria-label="Cari data" placeholder="Cari data..." className="w-full bg-transparent text-xs outline-none" /></label>
             <div className="grid gap-1 sm:grid-cols-3">
               {actionItems.map(({ label, icon: Icon, action }) => <button key={label} onClick={() => runAction(action)} className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"><Icon className="h-4 w-4" />{label}</button>)}
+              <button onClick={() => { setIsMobileOpen(false); setShowChangePassword(true); }} className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"><KeyRound className="h-4 w-4"/>Ganti Password</button>
+              <button onClick={() => void logout()} className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-bold text-rose-600 hover:bg-rose-50"><LogOut className="h-4 w-4"/>Keluar</button>
             </div>
           </div>
         )}
       </div>
+      <ChangePasswordModal open={showChangePassword} onClose={() => setShowChangePassword(false)} onSessionEnded={() => window.location.reload()}/>
     </header>
   );
 }

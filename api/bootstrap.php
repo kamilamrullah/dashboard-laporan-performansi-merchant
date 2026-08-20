@@ -1,6 +1,26 @@
 <?php
 declare(strict_types=1);
 
+/** Memuat pasangan KEY=VALUE dari .env lokal tanpa menimpa environment server yang sudah tersedia. */
+function load_local_environment(string $path): void
+{
+    if (!is_file($path) || !is_readable($path)) return;
+    $lines = file($path, FILE_IGNORE_NEW_LINES);
+    if ($lines === false) throw new RuntimeException('File environment tidak dapat dibaca.');
+    foreach ($lines as $index => $line) {
+        $line = trim($index === 0 ? ltrim($line, "\xEF\xBB\xBF") : $line);
+        if ($line === '' || str_starts_with($line, '#')) continue;
+        if (!str_contains($line, '=')) throw new RuntimeException('Format file environment tidak valid.');
+        [$key, $value] = array_map('trim', explode('=', $line, 2));
+        if (!preg_match('/^[A-Z_][A-Z0-9_]*$/', $key)) throw new RuntimeException('Nama environment variable tidak valid.');
+        if (getenv($key) !== false) continue;
+        if (strlen($value) >= 2 && (($value[0] === '"' && str_ends_with($value, '"')) || ($value[0] === "'" && str_ends_with($value, "'")))) $value = substr($value, 1, -1);
+        putenv($key . '=' . $value); $_ENV[$key] = $value;
+    }
+}
+
+load_local_environment(dirname(__DIR__) . '/.env');
+
 /** Mengambil environment variable dan menggunakan default khusus development bila tidak tersedia. */
 function env_value(string $key, ?string $default = null): ?string
 {
@@ -42,4 +62,3 @@ function json_response(array $payload, int $status = 200): never
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
-
