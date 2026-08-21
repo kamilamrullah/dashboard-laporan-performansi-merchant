@@ -44,7 +44,7 @@ final class TicketImporter
             $this->updatePreviewBatch($batchId, count($rows), $summary);
             $this->database->commit();
             $previewPage = $this->previewRows($batchId, $token, 1, 50, null);
-            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'original_filename' => mb_substr(basename(str_replace('\\', '/', $originalFilename)), 0, 255), 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'rows' => $previewPage['items'], 'pagination' => $previewPage['pagination']];
+            return ['status' => 'PREVIEWED', 'batch_id' => $batchId, 'original_filename' => mb_substr(basename(str_replace('\\', '/', $originalFilename)), 0, 255), 'confirmation_token' => $token, 'confirmation_expires_at' => date('c', time() + 86400), 'period_start' => $periodStart, 'period_end' => $periodEnd, 'summary' => $summary, 'segment_summary' => $this->segmentSummary($batchId), 'rows' => $previewPage['items'], 'pagination' => $previewPage['pagination']];
         } catch (Throwable $error) {
             if ($this->database->inTransaction()) $this->database->rollBack();
             throw $error;
@@ -227,6 +227,14 @@ final class TicketImporter
         $statement->execute(['valid_rows' => $validRows, 'duplicates' => $summary['duplicate_in_file'] + $summary['duplicate_database'], 'rejected' => $summary['invalid'] + $summary['conflict_in_file'], 'id' => $batchId]);
     }
 
+    /** Menghitung jumlah Ticket No unik per segmentasi dari staging dan mengabaikan duplikat, konflik, serta baris invalid. */
+    private function segmentSummary(int $batchId): array
+    {
+        $statement = $this->database->prepare("SELECT COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(normalized_data, '$.complaint_segment')), ''), 'Tanpa Segmentasi') complaint_segment, COUNT(*) total FROM ticket_import_rows WHERE batch_id = :batch_id AND normalized_data IS NOT NULL AND outcome NOT IN ('DUPLICATE_IN_FILE', 'CONFLICT_IN_FILE', 'INVALID') GROUP BY complaint_segment ORDER BY total DESC, complaint_segment");
+        $statement->execute(['batch_id' => $batchId]);
+        return array_map(static fn (array $row): array => ['complaint_segment' => (string) $row['complaint_segment'], 'total' => (int) $row['total']], $statement->fetchAll());
+    }
+
     /** Mengunci satu batch preview tiket untuk mencegah konfirmasi atau penghapusan bersamaan. */
     private function lockPreviewBatch(int $batchId): array
     {
@@ -367,7 +375,7 @@ final class TicketImporter
             if (($normalized['merchant_id'] ?? null) !== ($existing['merchant_id'] ?? null)) $changedFields[] = 'merchant_id';
             foreach (self::DATA_FIELDS as $field) if (($this->ticketData($existing)[$field] ?? null) !== ($this->ticketData($normalized)[$field] ?? null)) $changedFields[] = $field;
         }
-        return ['id' => $id, 'source_row_number' => $sourceRow, 'outcome' => $outcome, 'changed_fields' => $changedFields, 'data' => $normalized, 'existing' => $existing, 'errors' => $errors];
+        return ['id' => $id, 'source_row_number' => $sourceRow, 'outcome' => $outcome, 'changed_fields' => $changedFields, 'warnings' => $normalized['validation_warnings'] ?? [], 'data' => $normalized, 'existing' => $existing, 'errors' => $errors];
     }
 
     /** Mengubah array staging menjadi JSON secara eksplisit dan aman. */

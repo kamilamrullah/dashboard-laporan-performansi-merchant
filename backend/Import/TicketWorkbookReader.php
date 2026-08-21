@@ -58,7 +58,7 @@ final class TicketWorkbookReader
     public function fingerprint(array $row): string
     {
         $businessData = $row;
-        unset($businessData['source_row_number']);
+        unset($businessData['source_row_number'], $businessData['validation_warnings']);
         return hash('sha256', json_encode($businessData, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     }
 
@@ -143,6 +143,9 @@ final class TicketWorkbookReader
         $lastUpdatedAt = $this->normalizeDateTime($source['LAST UPDATE TIME'], $sourceRow, 'Last Update Time', true);
         if ($closedAt !== null && $openedAt > $closedAt) throw new RuntimeException("Close Time lebih awal dari Open Time pada baris {$sourceRow}.");
         if ($lastUpdatedAt !== null && $openedAt > $lastUpdatedAt) throw new RuntimeException("Last Update Time lebih awal dari Open Time pada baris {$sourceRow}.");
+        $durationMinutes = $this->elapsedMinutes($openedAt, $lastUpdatedAt);
+        $responseMinutes = $this->elapsedMinutes($openedAt, $closedAt);
+        $warnings = $this->qualityWarnings($source, $closedAt, $lastUpdatedAt, $durationMinutes, $responseMinutes);
         return [
             'source_row_number' => $sourceRow,
             'ticket_number' => $ticketNumber,
@@ -152,9 +155,10 @@ final class TicketWorkbookReader
             'closed_at' => $closedAt,
             'last_updated_at' => $lastUpdatedAt,
             'duration_raw' => $this->normalizedText($source['DURATION'], 64, $sourceRow, 'Duration'),
-            'duration_minutes' => $this->elapsedMinutes($openedAt, $lastUpdatedAt),
-            'response_time_minutes' => $this->elapsedMinutes($openedAt, $closedAt),
+            'duration_minutes' => $durationMinutes,
+            'response_time_minutes' => $responseMinutes,
             'classification_flag' => $this->normalizedText($source['FLAG'], 64, $sourceRow, 'Flag'),
+            'validation_warnings' => $warnings,
         ];
     }
 
@@ -199,5 +203,27 @@ final class TicketWorkbookReader
         $seconds = strtotime($end) - strtotime($start);
         if ($seconds < 0) throw new RuntimeException('Rentang waktu tiket tidak valid.');
         return intdiv($seconds, 60);
+    }
+
+    /** Menghasilkan warning kualitas tanpa menolak baris yang masih dapat dipakai untuk laporan. */
+    private function qualityWarnings(array $source, ?string $closedAt, ?string $lastUpdatedAt, ?int $durationMinutes, ?int $responseMinutes): array
+    {
+        $warnings = [];
+        if (trim($source['STATUS']) === '') $warnings[] = 'Status kosong.';
+        if (trim($source['SEGMENTASI KELUHAN']) === '') $warnings[] = 'Segmentasi Keluhan kosong.';
+        if ($closedAt === null) $warnings[] = 'Close Time kosong; tiket masih open.';
+        if ($lastUpdatedAt === null) $warnings[] = 'Last Update Time kosong; Duration tidak dapat dihitung.';
+        if ($closedAt !== null && $lastUpdatedAt !== null && $lastUpdatedAt > $closedAt) $warnings[] = 'Last Update Time lebih akhir daripada Close Time.';
+        if (!$this->sourceElapsedMatches($source['DURASI'], $durationMinutes)) $warnings[] = 'Nilai Durasi sumber berbeda dari Last Update Time dikurangi Open Time.';
+        if (!$this->sourceElapsedMatches($source['RESPON TIME'], $responseMinutes)) $warnings[] = 'Nilai respon time sumber berbeda dari Close Time dikurangi Open Time.';
+        return $warnings;
+    }
+
+    /** Membandingkan pecahan hari Excel dengan total menit kalkulasi menggunakan toleransi satu menit untuk sisa detik. */
+    private function sourceElapsedMatches(string $sourceValue, ?int $calculatedMinutes): bool
+    {
+        if ($sourceValue === '' && $calculatedMinutes === null) return true;
+        if (!is_numeric($sourceValue) || $calculatedMinutes === null) return false;
+        return abs(((float) $sourceValue * 1440) - $calculatedMinutes) <= 1.01;
     }
 }

@@ -42,6 +42,16 @@ try {
     $inspection = $reader->inspectTickets($invalidDate);
     assert_ticket_reader(count($inspection['invalid_rows']) === 1, 'Tanggal kalender tidak valid harus ditolak per baris.');
 
+    $warningFile = TicketWorkbookFactory::create([ticket_row([2 => '', 8 => '', 12 => '', 13 => '', 14 => '', 18 => ''])]);
+    $paths[] = $warningFile;
+    $warningInspection = $reader->inspectTickets($warningFile);
+    assert_ticket_reader($warningInspection['invalid_rows'] === [] && count($warningInspection['rows'][0]['validation_warnings']) >= 4, 'Masalah kualitas nonfatal harus menjadi warning, bukan baris invalid.');
+
+    $mismatchFile = TicketWorkbookFactory::create([ticket_row([14 => '2', 18 => '2'])]);
+    $paths[] = $mismatchFile;
+    $mismatchWarnings = $reader->inspectTickets($mismatchFile)['rows'][0]['validation_warnings'];
+    assert_ticket_reader(count(array_filter($mismatchWarnings, static fn (string $warning): bool => str_contains($warning, 'berbeda'))) === 2, 'Ketidaksesuaian Durasi dan respon time sumber harus menghasilkan warning.');
+
     $wrongHeader = TicketWorkbookFactory::create([], ['Ticket No']);
     $paths[] = $wrongHeader;
     try {

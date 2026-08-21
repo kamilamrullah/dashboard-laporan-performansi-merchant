@@ -159,6 +159,7 @@ export interface TicketImportData {
   duration_minutes: number | null;
   response_time_minutes: number | null;
   classification_flag: string;
+  validation_warnings?: string[];
   source_batch_id?: number;
 }
 
@@ -167,6 +168,7 @@ export interface TicketImportRow {
   source_row_number: number;
   outcome: TicketImportOutcome;
   changed_fields: string[];
+  warnings: string[];
   data: TicketImportData | null;
   existing: TicketImportData | null;
   errors: { message: string } | null;
@@ -181,6 +183,7 @@ export interface TicketImportPreview {
   period_start: string | null;
   period_end: string | null;
   summary: TransactionImportSummary;
+  segment_summary: TicketSegmentSummary[];
   rows: TicketImportRow[];
   pagination: PaginationMeta;
 }
@@ -188,6 +191,7 @@ export interface TicketImportPreview {
 export interface TicketImportPreviewPage { items: TicketImportRow[]; pagination: PaginationMeta; }
 export type TicketImportResult = TransactionImportResult;
 export type TicketImportBatch = TransactionImportBatch;
+export interface TicketSegmentSummary { complaint_segment: string; total: number; }
 
 export interface TicketImportHistoryRow {
   id: number;
@@ -204,6 +208,7 @@ export interface TicketImportHistory { items: TicketImportBatch[]; pagination: P
 export interface TicketImportBatchDetail {
   batch: TicketImportBatch;
   summary: TransactionImportSummary;
+  segment_summary: TicketSegmentSummary[];
   rows: { items: TicketImportHistoryRow[]; pagination: PaginationMeta };
 }
 

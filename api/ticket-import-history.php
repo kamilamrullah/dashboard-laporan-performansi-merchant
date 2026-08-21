@@ -62,6 +62,14 @@ function ticket_batch_summary(PDO $database, int $batchId): array
     return $summary;
 }
 
+/** Menghitung ringkasan segmentasi dari staging unik untuk detail riwayat tiket. */
+function ticket_segment_summary(PDO $database, int $batchId): array
+{
+    $statement = $database->prepare("SELECT COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(normalized_data, '$.complaint_segment')), ''), 'Tanpa Segmentasi') complaint_segment, COUNT(*) total FROM ticket_import_rows WHERE batch_id = :batch_id AND normalized_data IS NOT NULL AND outcome NOT IN ('DUPLICATE_IN_FILE', 'CONFLICT_IN_FILE', 'INVALID') GROUP BY complaint_segment ORDER BY total DESC, complaint_segment");
+    $statement->execute(['batch_id' => $batchId]);
+    return array_map(static fn (array $row): array => ['complaint_segment' => (string) $row['complaint_segment'], 'total' => (int) $row['total']], $statement->fetchAll());
+}
+
 /** Mengambil halaman audit staging tiket tanpa menampilkan kolom pribadi yang tidak disimpan. */
 function ticket_batch_rows(PDO $database, int $batchId, int $page, int $perPage): array
 {
@@ -97,7 +105,7 @@ try {
     if ((string) $user['role'] === 'viewer') json_response(['error' => 'Viewer hanya dapat melihat ringkasan riwayat import.'], 403);
     $batchId = filter_var($batchIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     if ($batchId === false) json_response(['error' => 'Parameter batch_id tidak valid.'], 422);
-    json_response(['batch' => ticket_batch_detail($database, (int) $batchId), 'summary' => ticket_batch_summary($database, (int) $batchId), 'rows' => ticket_batch_rows($database, (int) $batchId, $page, $perPage)]);
+    json_response(['batch' => ticket_batch_detail($database, (int) $batchId), 'summary' => ticket_batch_summary($database, (int) $batchId), 'segment_summary' => ticket_segment_summary($database, (int) $batchId), 'rows' => ticket_batch_rows($database, (int) $batchId, $page, $perPage)]);
 } catch (Throwable $error) {
     error_log($error->getMessage());
     json_response(['error' => 'Riwayat import tiket gagal dimuat.'], 500);

@@ -70,6 +70,7 @@ try {
     assert_ticket_import($preview['summary']['ready'] === 1, 'Tiket READY tidak terdeteksi.');
     assert_ticket_import($preview['summary']['duplicate_in_file'] === 1, 'Duplikat Ticket No identik dalam file tidak terdeteksi.');
     assert_ticket_import($preview['summary']['invalid'] === 1, 'Baris tiket invalid tidak terdeteksi.');
+    assert_ticket_import(count($preview['segment_summary']) === 1 && $preview['segment_summary'][0]['complaint_segment'] === 'Permohonan Refund' && $preview['segment_summary'][0]['total'] === 1, 'Ringkasan segmentasi harus menghitung Ticket No unik tanpa duplikat atau invalid.');
     assert_ticket_import($preview['period_start'] === '2026-01-14', 'Periode tidak dihitung dari Open Time.');
     $result = $importer->confirm((int) $preview['batch_id'], (string) $preview['confirmation_token'], false, null);
     assert_ticket_import($result['inserted'] === 1 && $result['duplicate'] === 1 && $result['rejected'] === 1, 'Statistik konfirmasi tiket tidak sesuai.');
