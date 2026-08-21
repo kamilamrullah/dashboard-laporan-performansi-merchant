@@ -9,7 +9,9 @@
     "lint": "tsc --noEmit",
     "test:import": "C:\\xampp\\php\\php.exe tests/TransactionWorkbookReaderTest.php && C:\\xampp\\php\\php.exe tests/TransactionImporterIntegrationTest.php",
     "test:auth": "C:\\xampp\\php\\php.exe tests/AuthenticationIntegrationTest.php",
-    "test:backend": "npm run test:import && npm run test:auth",
+    "test:ticket-reader": "C:\\xampp\\php\\php.exe tests/TicketWorkbookReaderTest.php",
+    "test:ticket-import": "C:\\xampp\\php\\php.exe tests/TicketImporterIntegrationTest.php",
+    "test:backend": "npm run test:import && npm run test:ticket-reader && npm run test:ticket-import && npm run test:auth",
     "preview": "vite preview"
   },
   "dependencies": {

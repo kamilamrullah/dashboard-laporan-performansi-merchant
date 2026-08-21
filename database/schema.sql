@@ -230,6 +230,8 @@ CREATE TABLE IF NOT EXISTS complaint_tickets (
   category VARCHAR(160) NOT NULL DEFAULT '',
   opened_at DATETIME NOT NULL,
   closed_at DATETIME NULL,
+  last_updated_at DATETIME NULL,
+  duration_raw VARCHAR(64) NULL,
   duration_minutes INT UNSIGNED NULL,
   response_time_minutes INT UNSIGNED NULL,
   type_description VARCHAR(160) NOT NULL DEFAULT '',
@@ -258,6 +260,8 @@ CREATE TABLE IF NOT EXISTS ticket_import_rows (
   row_fingerprint CHAR(64) NOT NULL,
   outcome VARCHAR(24) NOT NULL,
   validation_errors JSON NULL,
+  normalized_data JSON NULL,
+  existing_data JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_ticket_import_source (batch_id, source_row_number),
@@ -265,6 +269,24 @@ CREATE TABLE IF NOT EXISTS ticket_import_rows (
   KEY idx_ticket_import_target (ticket_id),
   CONSTRAINT fk_ticket_import_batch FOREIGN KEY (batch_id) REFERENCES import_batches (id) ON DELETE CASCADE,
   CONSTRAINT fk_ticket_import_target FOREIGN KEY (ticket_id) REFERENCES complaint_tickets (id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS ticket_change_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  ticket_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> complaint_tickets.id',
+  batch_id BIGINT UNSIGNED NOT NULL COMMENT 'FK -> import_batches.id',
+  source_row_number INT UNSIGNED NOT NULL,
+  old_data JSON NOT NULL,
+  new_data JSON NOT NULL,
+  confirmed_by_user_id BIGINT UNSIGNED NULL COMMENT 'FK -> users.id',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_ticket_history_target (ticket_id, created_at),
+  KEY idx_ticket_history_batch (batch_id),
+  KEY idx_ticket_history_confirmed_by_user (confirmed_by_user_id),
+  CONSTRAINT fk_ticket_history_target FOREIGN KEY (ticket_id) REFERENCES complaint_tickets (id),
+  CONSTRAINT fk_ticket_history_batch FOREIGN KEY (batch_id) REFERENCES import_batches (id),
+  CONSTRAINT fk_ticket_history_confirmed_by_user FOREIGN KEY (confirmed_by_user_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS incidents (
@@ -326,6 +348,9 @@ VALUES
   ('20260820_007', 'Index expired transaction preview cleanup'),
   ('20260820_008', 'Add payment channel change history')
   ,('20260820_009', 'Add authentication, roles, users, login attempts, and user audit foreign keys')
+  ,('20260821_010', 'Add ticket import preview data and ticket change history')
+  ,('20260821_011', 'Preserve raw ticket Duration value from source workbook')
+  ,('20260821_012', 'Store ticket last update time for verified elapsed-time calculations')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO roles (code, name, description) VALUES

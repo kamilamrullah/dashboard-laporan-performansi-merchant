@@ -1,0 +1,84 @@
+import { useEffect, useRef, useState } from 'react';
+import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, FileSpreadsheet, History, Info, LoaderCircle, RotateCcw, UploadCloud, X } from 'lucide-react';
+import { clearTicketPreviewToken, confirmTicketImport, fetchTicketPreviewRows, getTicketPreviewToken, previewTicketImport, storeTicketPreviewToken } from '../services/ticketImportApi';
+import type { MerchantOption, TicketImportBatchDetail, TicketImportOutcome, TicketImportPreview, TicketImportResult } from '../types';
+import { TicketImportHistory } from './TicketImportHistory';
+
+interface TicketImportPanelProps { merchantOptions: MerchantOption[]; onCompleted?: () => void; onPendingPreviewChange?: (pending: boolean) => void; }
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const outcomeLabels: Record<TicketImportOutcome, string> = { READY: 'Siap', CHANGED: 'Berubah', DUPLICATE_IN_FILE: 'Duplikat file', DUPLICATE_DATABASE: 'Duplikat database', CONFLICT_IN_FILE: 'Konflik file', INVALID: 'Invalid' };
+const outcomeStyles: Record<TicketImportOutcome, string> = { READY: 'bg-emerald-100 text-emerald-700', CHANGED: 'bg-amber-100 text-amber-800', DUPLICATE_IN_FILE: 'bg-slate-200 text-slate-700', DUPLICATE_DATABASE: 'bg-slate-200 text-slate-700', CONFLICT_IN_FILE: 'bg-orange-100 text-orange-800', INVALID: 'bg-rose-100 text-rose-700' };
+
+// Memformat total menit kalender sebagai Hari:Jam:Menit dengan jam dan menit dua digit.
+function formatElapsedMinutes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  const days = Math.floor(value / 1440); const hours = Math.floor((value % 1440) / 60); const minutes = value % 60;
+  return `${days}:${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+// Menampilkan alur upload, preview, dan konfirmasi import tiket aduan.
+export function TicketImportPanel({ merchantOptions, onCompleted, onPendingPreviewChange }: TicketImportPanelProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null); const [merchantInput, setMerchantInput] = useState(''); const [preview, setPreview] = useState<TicketImportPreview | null>(null); const [result, setResult] = useState<TicketImportResult | null>(null);
+  const [changedAction, setChangedAction] = useState<'skip' | 'update'>('skip'); const [error, setError] = useState<string | null>(null); const [isPreviewing, setIsPreviewing] = useState(false); const [isConfirming, setIsConfirming] = useState(false); const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [activeView, setActiveView] = useState<'upload' | 'history'>('upload'); const [previewFilter, setPreviewFilter] = useState<TicketImportOutcome | ''>('');
+  const selectedMerchant = merchantOptions.find((merchant) => merchant.merchant_name.trim().toLocaleLowerCase('id-ID') === merchantInput.trim().toLocaleLowerCase('id-ID')) ?? null;
+  const isNewMerchant = merchantInput.trim() !== '' && selectedMerchant === null;
+
+  // Memberi tahu modal ketika upload atau preview tiket masih harus dijaga dari penutupan tidak sengaja.
+  useEffect(() => { onPendingPreviewChange?.(isPreviewing || preview !== null); }, [isPreviewing, onPendingPreviewChange, preview]);
+  // Membersihkan status pending parent ketika panel dilepas.
+  useEffect(() => () => onPendingPreviewChange?.(false), [onPendingPreviewChange]);
+
+  // Mengunggah file terpilih dan langsung membuka preview hasil validasi.
+  const createPreview = async (selectedFile: File) => {
+    if (!merchantInput.trim()) { setError('Pilih merchant terlebih dahulu.'); return; }
+    setIsPreviewing(true); setError(null); setPreviewFilter('');
+    try { const created = await previewTicketImport(selectedFile, selectedMerchant?.id ?? null, isNewMerchant ? merchantInput.trim() : null); storeTicketPreviewToken(created.batch_id, created.confirmation_token); setPreview(created); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Preview tiket gagal diproses.'); }
+    finally { setIsPreviewing(false); }
+  };
+
+  // Memvalidasi file di browser lalu otomatis mengirimnya untuk preview.
+  const selectFile = (selected: File | undefined) => {
+    setError(null); setPreview(null); setResult(null);
+    if (!selected) { setFile(null); return; }
+    if (!merchantInput.trim()) { setError('Pilih merchant sebelum memilih file tiket.'); return; }
+    if (!selected.name.toLowerCase().endsWith('.xlsx')) { setError('File tiket harus berformat XLSX.'); return; }
+    if (selected.size <= 0 || selected.size > MAX_FILE_BYTES) { setError('Ukuran file harus lebih dari 0 dan maksimal 20 MB.'); return; }
+    setFile(selected); void createPreview(selected);
+  };
+
+  // Mengambil halaman atau filter preview tanpa mengunggah ulang workbook.
+  const loadPage = async (page: number, outcome: TicketImportOutcome | '' = previewFilter) => {
+    if (!preview) return; setIsLoadingPage(true); setError(null);
+    try { const loaded = await fetchTicketPreviewRows(preview, page, outcome); setPreview((current) => current ? { ...current, rows: loaded.items, pagination: loaded.pagination } : current); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Halaman preview tiket gagal dimuat.'); }
+    finally { setIsLoadingPage(false); }
+  };
+
+  // Mengonfirmasi import tiket dan membersihkan token preview setelah selesai.
+  const confirmImport = async () => {
+    if (!preview) return; setIsConfirming(true); setError(null);
+    try { const completed = await confirmTicketImport(preview, changedAction); clearTicketPreviewToken(preview.batch_id); setResult(completed); setPreview(null); onCompleted?.(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Konfirmasi tiket gagal diproses.'); }
+    finally { setIsConfirming(false); }
+  };
+
+  // Membangun kembali preview dari riwayat memakai token yang tersimpan di sesi browser.
+  const resumePreview = async (detail: TicketImportBatchDetail) => {
+    const token = getTicketPreviewToken(detail.batch.id); if (!token) { setError('Token preview tidak tersedia pada sesi browser ini.'); setActiveView('upload'); return; }
+    const restored: TicketImportPreview = { status: 'PREVIEWED', batch_id: detail.batch.id, original_filename: detail.batch.original_filename, confirmation_token: token, confirmation_expires_at: detail.batch.confirmation_expires_at ?? '', period_start: detail.batch.detected_period_start, period_end: detail.batch.detected_period_end, summary: detail.summary, rows: [], pagination: detail.rows.pagination };
+    setIsLoadingPage(true); setError(null);
+    try { const loaded = await fetchTicketPreviewRows(restored, 1, ''); setPreview({ ...restored, rows: loaded.items, pagination: loaded.pagination }); setResult(null); setActiveView('upload'); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Preview tiket tidak dapat dilanjutkan.'); setActiveView('upload'); }
+    finally { setIsLoadingPage(false); }
+  };
+
+  // Mengosongkan state untuk memulai upload tiket lain.
+  const reset = () => { setFile(null); setPreview(null); setResult(null); setError(null); setChangedAction('skip'); setPreviewFilter(''); if (inputRef.current) inputRef.current.value = ''; };
+  const tabs = <nav className="flex w-fit rounded-xl border border-slate-200 bg-white p-1 shadow-sm"><button onClick={() => setActiveView('upload')} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${activeView === 'upload' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}><UploadCloud className="h-3.5 w-3.5"/>Upload Baru</button><button onClick={() => setActiveView('history')} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${activeView === 'history' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}><History className="h-3.5 w-3.5"/>Riwayat Import</button></nav>;
+  if (activeView === 'history') return <div className="space-y-5">{tabs}<TicketImportHistory onResume={(detail) => void resumePreview(detail)}/></div>;
+  if (result) return <div className="space-y-5">{tabs}<section className="mx-auto max-w-2xl rounded-2xl border border-emerald-200 bg-white p-7 text-center"><CheckCircle2 className="mx-auto h-12 w-12 text-emerald-600"/><h3 className="mt-4 text-lg font-bold">Import tiket selesai</h3><p className="mt-1 text-xs text-slate-500">Batch #{result.batch_id} berhasil diproses.</p><div className="mt-6 grid grid-cols-4 gap-3">{[['Ditambahkan', result.inserted], ['Diperbarui', result.updated], ['Duplikat', result.duplicate], ['Ditolak', result.rejected]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4"><p className="text-xl font-bold">{value}</p><p className="text-[9px] uppercase text-slate-400">{label}</p></div>)}</div><button onClick={reset} className="mt-6 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-bold text-white"><RotateCcw className="h-4 w-4"/>Import file lain</button></section></div>;
+  return <div className="space-y-5">{tabs}{error && <div role="alert" className="flex gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs font-semibold text-rose-700"><AlertCircle className="h-4 w-4"/><span className="flex-1">{error}</span><button onClick={() => setError(null)}><X className="h-4 w-4"/></button></div>}{!preview ? <section className="rounded-2xl border border-slate-200 bg-white p-6"><div className="flex items-center gap-3"><span className="rounded-xl bg-indigo-50 p-3 text-indigo-600"><UploadCloud className="h-5 w-5"/></span><div><h2 className="text-base font-bold">Upload Data Tiket Aduan</h2><p className="text-xs text-slate-400">Preview akan tampil otomatis sebelum data disimpan</p></div></div><label className="mt-5 block text-xs font-bold">Nama merchant<input list="ticket-merchant-options" value={merchantInput} onChange={(event) => setMerchantInput(event.target.value)} placeholder="Cari atau ketik nama merchant baru" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-medium outline-none focus:border-indigo-400"/><datalist id="ticket-merchant-options">{merchantOptions.map((merchant) => <option key={merchant.id} value={merchant.merchant_name}/>)}</datalist></label>{merchantInput.trim() && <p className={`mt-2 flex items-center gap-2 rounded-lg px-3 py-2 text-[10px] font-semibold ${isNewMerchant ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}><Info className="h-3.5 w-3.5"/>{isNewMerchant ? 'Merchant baru akan ditambahkan saat preview dibuat.' : 'Merchant existing dipilih dari database.'}</p>}<input ref={inputRef} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden" onChange={(event) => selectFile(event.target.files?.[0])}/><button disabled={!merchantInput.trim() || isPreviewing} onClick={() => inputRef.current?.click()} className="mt-5 flex min-h-48 w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 disabled:opacity-50"><FileSpreadsheet className={`h-8 w-8 text-indigo-600 ${isPreviewing ? 'animate-pulse' : ''}`}/><p className="mt-4 text-sm font-bold">{isPreviewing ? 'Memvalidasi workbook...' : 'Pilih file tiket XLSX'}</p><p className="mt-1 text-xs text-slate-400">Maksimal 20 MB · preview otomatis</p></button>{file && <p className="mt-3 text-xs text-slate-500">File: <span className="font-semibold">{file.name}</span></p>}</section> : <><section className="grid grid-cols-2 gap-3 sm:grid-cols-7">{Object.entries(preview.summary).map(([key, value]) => <div key={key} className="rounded-xl border border-slate-200 bg-white p-3 text-center"><p className="text-lg font-bold">{value}</p><p className="text-[9px] uppercase text-slate-400">{key.replaceAll('_', ' ')}</p></div>)}</section><section className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h3 className="text-sm font-bold">Preview {preview.original_filename}</h3><p className="text-[10px] text-slate-400">{preview.period_start ?? '—'} sampai {preview.period_end ?? '—'} · Total Keluhan {preview.summary.total}</p></div><select value={previewFilter} onChange={(event) => { const value = event.target.value as TicketImportOutcome | ''; setPreviewFilter(value); void loadPage(1, value); }} className="rounded-lg border border-slate-200 px-3 py-2 text-xs"><option value="">Semua status</option>{Object.entries(outcomeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></header><div className="overflow-x-auto"><table className="w-full min-w-[1250px] text-left text-xs"><thead className="bg-slate-50 text-[10px] uppercase text-slate-500"><tr><th className="px-4 py-3">Baris</th><th className="px-4 py-3">Hasil</th><th className="px-4 py-3">Segmentasi Keluhan</th><th className="px-4 py-3">Open Time</th><th className="px-4 py-3">Close Time</th><th className="px-4 py-3">Last Update Time</th><th className="px-4 py-3">Duration (Hari:Jam:Menit)</th><th className="px-4 py-3">Response Time (Hari:Jam:Menit)</th><th className="px-4 py-3 text-right">Response Time (Menit)</th><th className="px-4 py-3 text-center">Total Keluhan</th></tr></thead><tbody className="divide-y divide-slate-100">{preview.rows.map((row) => <tr key={row.id} className={row.outcome === 'CHANGED' ? 'bg-amber-50/50' : ''}><td className="px-4 py-3 font-mono">{row.source_row_number}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[9px] font-bold ${outcomeStyles[row.outcome]}`}>{outcomeLabels[row.outcome]}</span>{row.errors?.message && <p className="mt-2 text-[10px] text-rose-600">{row.errors.message}</p>}</td><td className="px-4 py-3 font-semibold">{row.data?.complaint_segment ?? '—'}</td><td className="px-4 py-3">{row.data?.opened_at ?? '—'}</td><td className="px-4 py-3">{row.data?.closed_at ?? '—'}</td><td className="px-4 py-3">{row.data?.last_updated_at ?? '—'}</td><td className="px-4 py-3 font-mono">{formatElapsedMinutes(row.data?.duration_minutes)}</td><td className="px-4 py-3 font-mono">{formatElapsedMinutes(row.data?.response_time_minutes)}</td><td className="px-4 py-3 text-right">{row.data?.response_time_minutes?.toLocaleString('id-ID') ?? '—'}</td><td className="px-4 py-3 text-center">{row.data ? 1 : '—'}</td></tr>)}</tbody></table></div><div className="flex items-center justify-between border-t border-slate-100 p-4 text-xs"><span>Halaman {preview.pagination.page} dari {preview.pagination.total_pages}</span><div className="flex gap-2"><button disabled={preview.pagination.page <= 1 || isLoadingPage} onClick={() => void loadPage(preview.pagination.page - 1)} className="rounded-lg border p-2 disabled:opacity-40"><ChevronLeft className="h-4 w-4"/></button><button disabled={preview.pagination.page >= preview.pagination.total_pages || isLoadingPage} onClick={() => void loadPage(preview.pagination.page + 1)} className="rounded-lg border p-2 disabled:opacity-40"><ChevronRight className="h-4 w-4"/></button></div></div></section>{preview.summary.changed > 0 && <section className="rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="text-xs font-bold text-amber-900">Ada {preview.summary.changed} tiket berubah</p><div className="mt-3 flex gap-4 text-xs"><label><input type="radio" checked={changedAction === 'skip'} onChange={() => setChangedAction('skip')}/> Lewati perubahan</label><label><input type="radio" checked={changedAction === 'update'} onChange={() => setChangedAction('update')}/> Perbarui data</label></div></section>}<div className="flex justify-end gap-3"><button onClick={reset} className="rounded-xl border border-slate-200 px-5 py-3 text-xs font-bold">Batalkan</button><button disabled={isConfirming || preview.summary.ready + (changedAction === 'update' ? preview.summary.changed : 0) === 0} onClick={() => void confirmImport()} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-bold text-white disabled:opacity-50">{isConfirming && <LoaderCircle className="h-4 w-4 animate-spin"/>}Konfirmasi Import</button></div></>}</div>;
+}
