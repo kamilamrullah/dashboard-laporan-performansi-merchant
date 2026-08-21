@@ -144,6 +144,76 @@ export interface TransactionImportBatchDetail {
 
 export interface TransactionPreviewDeleteResult { status: 'DELETED'; batch_id: number; }
 
+export type TicketImportOutcome = TransactionImportOutcome;
+
+export interface TicketImportData {
+  source_row_number: number;
+  merchant_id?: number;
+  ticket_number: string;
+  status: string;
+  complaint_segment: string;
+  opened_at: string;
+  closed_at: string | null;
+  last_updated_at: string | null;
+  duration_raw: string | null;
+  duration_minutes: number | null;
+  response_time_minutes: number | null;
+  classification_flag: string;
+  validation_warnings?: string[];
+  source_batch_id?: number;
+}
+
+export interface TicketImportRow {
+  id: number;
+  source_row_number: number;
+  outcome: TicketImportOutcome;
+  changed_fields: string[];
+  warnings: string[];
+  data: TicketImportData | null;
+  existing: TicketImportData | null;
+  errors: { message: string } | null;
+}
+
+export interface TicketImportPreview {
+  status: 'PREVIEWED';
+  batch_id: number;
+  original_filename: string;
+  confirmation_token: string;
+  confirmation_expires_at: string;
+  period_start: string | null;
+  period_end: string | null;
+  summary: TransactionImportSummary;
+  segment_summary: TicketSegmentSummary[];
+  rows: TicketImportRow[];
+  pagination: PaginationMeta;
+}
+
+export interface TicketImportPreviewPage { items: TicketImportRow[]; pagination: PaginationMeta; }
+export type TicketImportResult = TransactionImportResult;
+export type TicketImportBatch = TransactionImportBatch;
+export interface TicketSegmentSummary { complaint_segment: string; total: number; }
+
+export interface TicketImportHistoryRow {
+  id: number;
+  source_row_number: number;
+  outcome: string;
+  normalized_data: TicketImportData | null;
+  existing_data: TicketImportData | null;
+  validation_errors: { message?: string } | null;
+  created_at: string;
+}
+
+export interface TicketImportHistory { items: TicketImportBatch[]; pagination: PaginationMeta; }
+
+export interface TicketImportBatchDetail {
+  batch: TicketImportBatch;
+  summary: TransactionImportSummary;
+  segment_summary: TicketSegmentSummary[];
+  rows: { items: TicketImportHistoryRow[]; pagination: PaginationMeta };
+}
+
+export type TicketPreviewDeleteResult = TransactionPreviewDeleteResult;
+
 export interface PaymentChannelMasterItem {
   sic_code: string;
   channel_name: string;
