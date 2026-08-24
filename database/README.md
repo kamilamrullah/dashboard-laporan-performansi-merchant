@@ -2,6 +2,16 @@
 
 Schema ini dirancang untuk MariaDB/MySQL pada XAMPP dan menggunakan database `merchant_performance_report`.
 
+## Data dummy development
+
+Jalankan seed deterministik berikut untuk mengisi merchant, mapping payment channel, transaksi agregat, tiket aduan, metadata batch, dan insiden sampai tanggal tertentu:
+
+```powershell
+C:\xampp\php\php.exe tools\seed_dummy_data.php --until=2026-08-24 --apply
+```
+
+Seed hanya berjalan ketika `APP_ENV=development`, dapat dijalankan ulang tanpa menggandakan natural key, dan tidak menghapus data yang sudah ada. Kode SIC `9001`–`9005`, datasource `DUMMY_SEED_V1`, nomor tiket berawalan `DUMMY-`, serta pembuat `Dummy Seed` menjadi penanda data buatan.
+
 ## Struktur utama
 
 - `import_batches`: metadata file, hash SHA-256, periode terdeteksi, statistik hasil, dan status import.

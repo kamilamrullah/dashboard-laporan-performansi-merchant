@@ -11,7 +11,9 @@
     "test:auth": "C:\\xampp\\php\\php.exe tests/AuthenticationIntegrationTest.php",
     "test:ticket-reader": "C:\\xampp\\php\\php.exe tests/TicketWorkbookReaderTest.php",
     "test:ticket-import": "C:\\xampp\\php\\php.exe tests/TicketImporterIntegrationTest.php",
-    "test:backend": "npm run test:import && npm run test:ticket-reader && npm run test:ticket-import && npm run test:auth",
+    "test:report": "C:\\xampp\\php\\php.exe tests/WordReportGeneratorTest.php",
+    "test:report-summary": "C:\\xampp\\php\\php.exe tests/ReportSummaryServiceIntegrationTest.php",
+    "test:backend": "npm run test:import && npm run test:ticket-reader && npm run test:ticket-import && npm run test:auth && npm run test:report-summary && npm run test:report",
     "preview": "vite preview"
   },
   "dependencies": {
