@@ -124,4 +124,17 @@ final class ReportDataRepository
         $statuses->execute($parameters);
         return ['segments' => $segments->fetchAll(), 'statuses' => $statuses->fetchAll()];
     }
+
+    /** Mengambil detail tiket minimum untuk tabel laporan berdasarkan Open Time periode terpilih. */
+    public function complaintTicketDetails(int $merchantId, string $periodStart, string $periodEnd): array
+    {
+        $statement = $this->database->prepare(
+            "SELECT complaint_segment, opened_at, closed_at, duration_raw, duration_minutes, response_time_minutes
+             FROM complaint_tickets
+             WHERE merchant_id = :merchant_id AND opened_at >= :period_start AND opened_at < :period_end
+             ORDER BY opened_at ASC, ticket_number ASC"
+        );
+        $statement->execute(['merchant_id' => $merchantId, 'period_start' => $periodStart, 'period_end' => $periodEnd]);
+        return $statement->fetchAll();
+    }
 }

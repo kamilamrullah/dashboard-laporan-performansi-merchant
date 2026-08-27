@@ -14,6 +14,26 @@ final class WordReportGenerator
     /** Menerima pembentuk paket DOCX agar generator mudah diuji secara terisolasi. */
     public function __construct(private readonly DocxPackage $package = new DocxPackage(), private readonly SummaryChartRenderer $chartRenderer = new SummaryChartRenderer()) {}
 
+    /** Membuat template layout yang dapat diedit tanpa menjalankan atau mengubah generator laporan produksi. */
+    public function generateEditableLayoutTemplate(string $outputPath, ?string $logoPath = null): array
+    {
+        $logo = $this->logo($logoPath);
+        $media = [
+            'certificates.png' => __DIR__ . '/assets/certificates.png',
+            'licenses.png' => __DIR__ . '/assets/licenses.png',
+            'contact-x.png' => __DIR__ . '/assets/contact-x.png',
+            'contact-instagram.jpeg' => __DIR__ . '/assets/contact-instagram.jpeg',
+            'contact-facebook.png' => __DIR__ . '/assets/contact-facebook.png',
+            'contact-website.png' => __DIR__ . '/assets/contact-website.png',
+        ];
+        if ($logo !== null) $media = ['company-logo.png' => $logo['path']] + $media;
+        $this->package->write($outputPath, $this->layoutTemplateDocumentXml($logo), $this->stylesXml(), [
+            'title' => 'Template Teknis Laporan Performansi Merchant',
+            'subject' => 'Template layout dengan anchor data dinamis',
+        ], $media);
+        return ['path' => $outputPath, 'filename' => basename($outputPath), 'sha256' => hash_file('sha256', $outputPath)];
+    }
+
     /** Menghasilkan cover, halaman judul, dan daftar isi sebagai fondasi awal laporan. */
     public function generateInitialPages(string $outputPath, array $report): array
     {
@@ -46,7 +66,6 @@ final class WordReportGenerator
             $this->chartRenderer->renderTopPaymentChannels($summary['top_payment_channels'], $topChannelChartPath);
             $this->chartRenderer->renderDailyPaymentTrend($summary['daily_trend']['rows'], $dailyTrendChartPath);
             $this->chartRenderer->renderTicketSegments($summary['ticket_summary']['segments'], $periodLabel, $ticketChartPath);
-            $document = $this->documentXml($periodLabel, $address, $phone, $fax, $logo, $merchant, $this->indonesianDate($issuedAt), $summary);
             $media = ['summary-payment-comparison.png' => $chartPath, 'payment-status-composition.png' => $performanceChartPath, 'top-payment-channels.png' => $topChannelChartPath, 'daily-payment-trend.png' => $dailyTrendChartPath, 'ticket-segments.png' => $ticketChartPath];
             $media += [
                 'certificates.png' => __DIR__ . '/assets/certificates.png',
@@ -56,11 +75,30 @@ final class WordReportGenerator
                 'contact-facebook.png' => __DIR__ . '/assets/contact-facebook.png',
                 'contact-website.png' => __DIR__ . '/assets/contact-website.png',
             ];
-            if ($logo !== null) $media = ['company-logo.png' => $logo['path']] + $media;
-            $this->package->write($outputPath, $document, $this->stylesXml(), [
-                'title' => "Laporan Performansi Bulanan {$periodLabel}",
-                'subject' => "Laporan Performansi Merchant {$merchant}",
-            ], $media);
+            $templatePath = __DIR__ . '/templates/laporan-performansi-template.docx';
+            if (is_file($templatePath)) {
+                $document = $this->templateDocumentXml($templatePath, $periodLabel, $address, $phone, $fax, $merchant, $this->indonesianDate($issuedAt), $summary);
+                $this->package->writeFromTemplate($templatePath, $outputPath, $document, [
+                    'generated-summary-payment-comparison.png' => $chartPath,
+                    'generated-payment-status-composition.png' => $performanceChartPath,
+                    'generated-top-payment-channels.png' => $topChannelChartPath,
+                    'generated-daily-payment-trend.png' => $dailyTrendChartPath,
+                    'generated-ticket-segments.png' => $ticketChartPath,
+                ], [
+                    'rId20' => 'generated-summary-payment-comparison.png',
+                    'rId21' => 'generated-payment-status-composition.png',
+                    'rId22' => 'generated-top-payment-channels.png',
+                    'rId23' => 'generated-daily-payment-trend.png',
+                    'rId24' => 'generated-ticket-segments.png',
+                ]);
+            } else {
+                $document = $this->documentXml($periodLabel, $address, $phone, $fax, $logo, $merchant, $this->indonesianDate($issuedAt), $summary);
+                if ($logo !== null) $media = ['company-logo.png' => $logo['path']] + $media;
+                $this->package->write($outputPath, $document, $this->stylesXml(), [
+                    'title' => "Laporan Performansi Bulanan {$periodLabel}",
+                    'subject' => "Laporan Performansi Merchant {$merchant}",
+                ], $media);
+            }
         } finally {
             if (is_file($chartPath)) unlink($chartPath);
             if (is_file($performanceChartPath)) unlink($performanceChartPath);
@@ -151,6 +189,371 @@ final class WordReportGenerator
             . '</w:body></w:document>';
     }
 
+    /** Mengisi anchor pada template Word terbaru sambil mempertahankan layout dan style hasil suntingan pengguna. */
+    private function templateDocumentXml(string $templatePath, string $period, string $address, string $phone, string $fax, string $merchant, string $issuedAt, array $summary): string
+    {
+        $document = new \DOMDocument();
+        $document->preserveWhiteSpace = false;
+        $document->formatOutput = false;
+        if (!$document->loadXML($this->package->readPart($templatePath, 'word/document.xml'), LIBXML_NONET)) throw new RuntimeException('XML template laporan tidak valid.');
+        $xpath = new \DOMXPath($document);
+        $xpath->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
+        $performanceTotal = $summary['performance']['totals'];
+        $textValues = [
+            '{{report_period}}' => $period,
+            '{{company_address}}' => $address,
+            '{{company_phone}}' => $phone,
+            '{{company_fax}}' => $fax,
+            '{{merchant_name}}' => mb_strtoupper($merchant, 'UTF-8'),
+            '{{issued_at}}' => $issuedAt,
+            '{{summary_introduction}}' => $this->summaryIntroduction($merchant, $period),
+            '{{performance_introduction}}' => 'Performance memperlihatkan tingkat keberhasilan transaksi pada sistem dengan ' . mb_strtoupper($merchant, 'UTF-8') . ' sebagai Biller-nya.',
+            '{{performance_lead}}' => 'Berikut ini ditampilkan performansi pembayaran ' . mb_strtoupper($merchant, 'UTF-8') . ' berdasarkan response code timeout.',
+            '{{narrative_payment_performance}}' => 'Pada tabel di atas menginformasikan bahwa pada bulan ' . $period . ' sukses rate transaksi ' . mb_strtoupper($merchant, 'UTF-8') . ' adalah sebesar ' . $this->percentageTwoDecimals((float) $performanceTotal['success_rate']) . '.',
+            '{{narrative_payment_channel}}' => $this->paymentChannelPerformanceNarrative($merchant, $period, $summary['payment_channel_performance']),
+            '{{daily_trend_introduction}}' => 'Berikut ini adalah trend transaksi sukses harian pada ' . mb_strtoupper($merchant, 'UTF-8') . ' yang terjadi di bulan ' . $period . '.',
+            '{{narrative_daily_transaction}}' => $this->dailyTrendNarrative($merchant, $period, $summary['daily_trend']),
+            '{{narrative_complaint_ticket}}' => $this->ticketSummaryNarrative($merchant, $period, $summary['ticket_summary']),
+            '{{narrative_incident}}' => 'Pada bulan ' . $period . ' diterima laporan Insiden baik dari Internal maupun Eksternal yang dapat mempengaruhi Success Rate transaksi ' . mb_strtoupper($merchant, 'UTF-8') . '.',
+        ];
+        $this->replaceTemplateText($xpath, $textValues);
+        $blocks = [
+            '{{table_monthly_summary}}' => $this->summaryTable($summary, $period),
+            '{{list_monthly_summary}}' => implode('', array_map(fn (string $text): string => $this->paragraph("\u{2022} " . $text, 'SummaryBullet'), $this->summaryNarratives($summary))),
+            '{{chart_and_narrative_monthly_comparison}}' => $this->comparisonLayout($summary['metrics']['payment_comparison']),
+            '{{table_payment_performance}}' => $this->performanceTable($summary['performance']),
+            '{{chart_payment_performance}}' => $this->paragraph('Berikut adalah ratio yang membandingkan jumlah transaksi sukses payment dan transaksi gagal timeout,', 'BodyText') . $this->performanceComparisonLayout($summary['performance']),
+            '{{table_payment_channel}}' => $this->paymentChannelPerformanceTable($summary['payment_channel_performance']),
+            '{{chart_top_payment_channel}}' => $this->topPaymentChannelChartDrawing(),
+            '{{list_top_payment_channel}}' => implode('', array_map(fn (string $text): string => $this->bulletListParagraph($text), $this->topPaymentChannelNarratives($summary['top_payment_channels']))),
+            '{{chart_daily_transaction}}' => $this->dailyTrendChartDrawing(),
+            '{{table_daily_transaction}}' => $this->dailyTrendTable($summary['daily_trend']),
+            '{{table_complaint_ticket}}' => $this->ticketSummaryTable($summary['ticket_summary']),
+            '{{chart_complaint_ticket}}' => $this->ticketChartDrawing(),
+            '{{table_manual_incident}}' => $this->incidentManualTable(),
+            '{{list_conclusion}}' => implode('', array_map(fn (string $text): string => $this->bulletListParagraph($text), $this->conclusionNarratives($merchant, $period, $summary))),
+        ];
+        foreach ($blocks as $anchor => $xml) {
+            $relationshipSafeXml = str_replace(['rId4', 'rId5', 'rId6', 'rId8', 'rId9'], ['rId20', 'rId21', 'rId22', 'rId23', 'rId24'], $xml);
+            $relationshipSafeXml = $this->centerDynamicContent($relationshipSafeXml);
+            $this->replaceTemplateAnchor($document, $xpath, $anchor, $relationshipSafeXml);
+        }
+        $this->fillTicketDetailTemplate($document, $xpath, $summary['ticket_details']);
+        $this->configureTemplatePageNumbering($document, $xpath);
+        $this->disablePrematureTemplateFieldUpdates($xpath);
+        $this->compactTemplateTables($document, $xpath);
+        $this->removeHeadingIndentation($xpath);
+        $result = $document->saveXML();
+        if ($result === false || str_contains($result, '{{')) throw new RuntimeException('Masih terdapat anchor template yang belum terisi.');
+        return $result;
+    }
+
+    /** Mengganti placeholder teks sekalipun Word memecahnya menjadi beberapa text run. */
+    private function replaceTemplateText(\DOMXPath $xpath, array $values): void
+    {
+        foreach ($xpath->query('//w:p') as $paragraph) {
+            $textNodes = $xpath->query('.//w:t', $paragraph);
+            if ($xpath->query('.//w:fldChar | .//w:instrText', $paragraph)->length > 0) {
+                foreach ($textNodes as $textNode) {
+                    $replacedNodeText = str_replace(array_keys($values), array_values($values), $textNode->textContent);
+                    if ($replacedNodeText !== $textNode->textContent) $this->setTemplateTextNode($textNode, $replacedNodeText);
+                }
+                continue;
+            }
+            $combined = '';
+            foreach ($textNodes as $textNode) $combined .= $textNode->textContent;
+            $replaced = str_replace(array_keys($values), array_values($values), $combined);
+            if ($combined === $replaced || $textNodes->length === 0) continue;
+            $this->setTemplateTextNode($textNodes->item(0), $replaced);
+            for ($index = 1; $index < $textNodes->length; $index++) $this->setTemplateTextNode($textNodes->item($index), '');
+            foreach (iterator_to_array($xpath->query('./w:pPr/w:shd | .//w:rPr/w:shd', $paragraph)) as $shading) $shading->parentNode?->removeChild($shading);
+        }
+    }
+
+    /** Memusatkan tabel dan paragraf gambar yang menggantikan anchor layout. */
+    private function centerDynamicContent(string $xml): string
+    {
+        $xml = str_replace('<w:tblPr><w:jc w:val="center"/>', '<w:tblPr data-centered="1"><w:jc w:val="center"/>', $xml);
+        $xml = str_replace('<w:tblPr>', '<w:tblPr><w:jc w:val="center"/>', $xml);
+        return str_replace('<w:tblPr data-centered="1">', '<w:tblPr>', $xml);
+    }
+
+    /** Menghapus indentasi langsung pada seluruh Heading 1 dan Heading 2 setelah template terisi. */
+    private function removeHeadingIndentation(\DOMXPath $xpath): void
+    {
+        foreach ($xpath->query('//w:p[w:pPr/w:pStyle[@w:val="Heading1" or @w:val="Heading2"]]/w:pPr/w:ind') as $indentation) {
+            $indentation->parentNode?->removeChild($indentation);
+        }
+    }
+
+    /** Mencegah TOC diperbarui sebelum Word selesai menghitung layout dan posisi halaman. */
+    private function disablePrematureTemplateFieldUpdates(\DOMXPath $xpath): void
+    {
+        foreach ($xpath->query('//w:fldChar[@w:fldCharType="begin"]') as $field) {
+            $field->removeAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'dirty');
+        }
+    }
+
+    /** Membagi dokumen setelah Daftar Isi dan memulai nomor halaman satu pada section laporan. */
+    private function configureTemplatePageNumbering(\DOMDocument $document, \DOMXPath $xpath): void
+    {
+        $namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        $relationshipNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+        $existingSections = $xpath->query('//w:sectPr');
+        if ($existingSections->length >= 2 && $xpath->query('//w:sectPr/w:footerReference')->length > 0) {
+            foreach (iterator_to_array($xpath->query('./w:footerReference | ./w:pgNumType', $existingSections->item(0))) as $node) $node->parentNode?->removeChild($node);
+            for ($index = 1; $index < $existingSections->length; $index++) {
+                $section = $existingSections->item($index);
+                foreach (iterator_to_array($xpath->query('./w:pgNumType', $section)) as $node) $node->parentNode?->removeChild($node);
+                if ($index === 1) {
+                    $pageNumber = $document->createElementNS($namespace, 'w:pgNumType');
+                    $pageNumber->setAttributeNS($namespace, 'w:start', '1');
+                    $columns = $xpath->query('./w:cols', $section)->item(0);
+                    if ($columns !== null) $section->insertBefore($pageNumber, $columns); else $section->appendChild($pageNumber);
+                }
+            }
+            return;
+        }
+        $body = $xpath->query('/w:document/w:body')->item(0);
+        $firstHeading = $xpath->query('/w:document/w:body/w:p[w:pPr/w:pStyle[@w:val="Heading1"]][1]')->item(0);
+        $finalSection = $xpath->query('/w:document/w:body/w:sectPr[last()]')->item(0);
+        if (!$body instanceof \DOMElement || !$firstHeading instanceof \DOMElement || !$finalSection instanceof \DOMElement) throw new RuntimeException('Batas section laporan tidak dapat ditentukan dari template.');
+
+        $previous = $firstHeading->previousSibling;
+        while ($previous !== null && !$previous instanceof \DOMElement) $previous = $previous->previousSibling;
+        if ($previous instanceof \DOMElement && $previous->localName === 'p' && $xpath->query('.//w:br[@w:type="page"]', $previous)->length > 0) $body->removeChild($previous);
+
+        $firstSection = $finalSection->cloneNode(true);
+        foreach (iterator_to_array($xpath->query('./w:footerReference | ./w:headerReference | ./w:pgNumType | ./w:type', $firstSection)) as $node) $node->parentNode?->removeChild($node);
+        $sectionType = $document->createElementNS($namespace, 'w:type');
+        $sectionType->setAttributeNS($namespace, 'w:val', 'nextPage');
+        $pageSize = $xpath->query('./w:pgSz', $firstSection)->item(0);
+        $firstSection->insertBefore($sectionType, $pageSize);
+        $boundary = $document->createElementNS($namespace, 'w:p');
+        $boundaryProperties = $document->createElementNS($namespace, 'w:pPr');
+        $boundaryProperties->appendChild($firstSection);
+        $boundary->appendChild($boundaryProperties);
+        $body->insertBefore($boundary, $firstHeading);
+
+        foreach (iterator_to_array($xpath->query('./w:footerReference | ./w:pgNumType', $finalSection)) as $node) $node->parentNode?->removeChild($node);
+        $footer = $document->createElementNS($namespace, 'w:footerReference');
+        $footer->setAttributeNS($namespace, 'w:type', 'default');
+        $footer->setAttributeNS($relationshipNamespace, 'r:id', 'rId25');
+        $finalSection->insertBefore($footer, $finalSection->firstChild);
+        $pageNumber = $document->createElementNS($namespace, 'w:pgNumType');
+        $pageNumber->setAttributeNS($namespace, 'w:start', '1');
+        $columns = $xpath->query('./w:cols', $finalSection)->item(0);
+        if ($columns !== null) $finalSection->insertBefore($pageNumber, $columns); else $finalSection->appendChild($pageNumber);
+    }
+
+    /** Menghapus jarak paragraf dan margin vertikal pada seluruh sel agar tabel tetap ringkas. */
+    private function compactTemplateTables(\DOMDocument $document, \DOMXPath $xpath): void
+    {
+        $namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        foreach ($xpath->query('//w:tbl//w:p') as $paragraph) {
+            $properties = $xpath->query('./w:pPr', $paragraph)->item(0);
+            if (!$properties instanceof \DOMElement) {
+                $properties = $document->createElementNS($namespace, 'w:pPr');
+                $paragraph->insertBefore($properties, $paragraph->firstChild);
+            }
+            $spacing = $xpath->query('./w:spacing', $properties)->item(0);
+            if (!$spacing instanceof \DOMElement) {
+                $spacing = $document->createElementNS($namespace, 'w:spacing');
+                $properties->appendChild($spacing);
+            }
+            $spacing->setAttributeNS($namespace, 'w:before', '0');
+            $spacing->setAttributeNS($namespace, 'w:after', '0');
+            $spacing->setAttributeNS($namespace, 'w:line', '240');
+            $spacing->setAttributeNS($namespace, 'w:lineRule', 'auto');
+        }
+        foreach ($xpath->query('//w:tbl//w:tc') as $cell) {
+            $properties = $xpath->query('./w:tcPr', $cell)->item(0);
+            if (!$properties instanceof \DOMElement) continue;
+            $margins = $xpath->query('./w:tcMar', $properties)->item(0);
+            if (!$margins instanceof \DOMElement) {
+                $margins = $document->createElementNS($namespace, 'w:tcMar');
+                $properties->appendChild($margins);
+            }
+            foreach (['top', 'bottom'] as $side) {
+                $margin = $xpath->query('./w:' . $side, $margins)->item(0);
+                if (!$margin instanceof \DOMElement) {
+                    $margin = $document->createElementNS($namespace, 'w:' . $side);
+                    $margins->appendChild($margin);
+                }
+                $margin->setAttributeNS($namespace, 'w:w', '0');
+                $margin->setAttributeNS($namespace, 'w:type', 'dxa');
+            }
+        }
+    }
+
+    /** Mengganti satu paragraf anchor dengan elemen Open XML dinamis. */
+    private function replaceTemplateAnchor(\DOMDocument $document, \DOMXPath $xpath, string $anchor, string $replacementXml): void
+    {
+        $paragraph = $this->templateParagraph($xpath, $anchor);
+        if ($paragraph === null || $paragraph->parentNode === null) throw new RuntimeException("Anchor template {$anchor} tidak ditemukan.");
+        $wrapper = new \DOMDocument();
+        $namespaces = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"';
+        if (!$wrapper->loadXML('<root ' . $namespaces . '>' . $replacementXml . '</root>', LIBXML_NONET)) throw new RuntimeException("Konten dinamis {$anchor} tidak valid.");
+        foreach (iterator_to_array($wrapper->documentElement->childNodes) as $node) $paragraph->parentNode->insertBefore($document->importNode($node, true), $paragraph);
+        $paragraph->parentNode->removeChild($paragraph);
+    }
+
+    /** Menemukan paragraf yang teksnya persis sama dengan anchor teknis. */
+    private function templateParagraph(\DOMXPath $xpath, string $anchor): ?\DOMElement
+    {
+        foreach ($xpath->query('//w:p') as $paragraph) {
+            $text = '';
+            foreach ($xpath->query('.//w:t', $paragraph) as $node) $text .= $node->textContent;
+            if (trim($text) === $anchor) return $paragraph;
+        }
+        return null;
+    }
+
+    /** Menggandakan baris contoh tabel Detail Tiket dan mempertahankan format yang dibuat di Word. */
+    private function fillTicketDetailTemplate(\DOMDocument $document, \DOMXPath $xpath, array $details): void
+    {
+        $anchor = $this->templateParagraph($xpath, '{{table_ticket_detail}}');
+        if ($anchor === null || $anchor->parentNode === null) throw new RuntimeException('Anchor template {{table_ticket_detail}} tidak ditemukan.');
+        $table = $anchor->nextSibling;
+        while ($table !== null && !($table instanceof \DOMElement && $table->localName === 'tbl')) $table = $table->nextSibling;
+        if (!$table instanceof \DOMElement) throw new RuntimeException('Tabel contoh Detail Tiket tidak ditemukan setelah anchor.');
+        $rows = $xpath->query('./w:tr', $table);
+        if ($rows->length < 2) throw new RuntimeException('Tabel Detail Tiket harus memiliki header dan satu baris contoh.');
+        $prototype = $rows->item(1)->cloneNode(true);
+        $widths = [2400, 2000, 2300, 1900, 1200];
+        foreach ($xpath->query('./w:tblGrid/w:gridCol', $table) as $index => $column) $column->setAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:w', (string) ($widths[$index] ?? 1400));
+        foreach ($xpath->query('./w:tr/w:tc', $table) as $index => $cell) {
+            $width = $xpath->query('./w:tcPr/w:tcW', $cell)->item(0);
+            if ($width instanceof \DOMElement) $width->setAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:w', (string) $widths[$index % 5]);
+        }
+        $headerCells = $xpath->query('./w:tr[1]/w:tc', $table);
+        if ($headerCells->length === 5) $this->setTemplateCellText($document, $xpath, $headerCells->item(3), 'Durasi (Jam:Menit)');
+        for ($index = $rows->length - 1; $index >= 1; $index--) $table->removeChild($rows->item($index));
+        $visibleRows = $details === [] ? [['', '', '', '', '']] : array_map(fn (array $row): array => [
+            $row['complaint_segment'] === '' ? 'Tanpa Segmentasi' : $row['complaint_segment'],
+            $this->ticketDateTime((string) $row['opened_at']),
+            $row['closed_at'] === null ? '-' : $this->ticketDateTime((string) $row['closed_at']),
+            $this->ticketDuration($row),
+            (string) $row['total'],
+        ], $details);
+        foreach ($visibleRows as $values) {
+            $row = $prototype->cloneNode(true);
+            $cells = $xpath->query('./w:tc', $row);
+            if ($cells->length !== 5) throw new RuntimeException('Tabel Detail Tiket harus memiliki lima kolom.');
+            foreach ($values as $index => $value) $this->setTemplateCellText($document, $xpath, $cells->item($index), $value);
+            $table->appendChild($row);
+        }
+        $this->setTemplateTableFontSize($document, $xpath, $table, 10);
+        $anchor->parentNode->removeChild($anchor);
+    }
+
+    /** Menetapkan ukuran font seluruh teks pada satu tabel Word dalam satuan point. */
+    private function setTemplateTableFontSize(\DOMDocument $document, \DOMXPath $xpath, \DOMElement $table, int $points): void
+    {
+        $namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        $halfPoints = (string) ($points * 2);
+        foreach ($xpath->query('.//w:r', $table) as $run) {
+            $properties = $xpath->query('./w:rPr', $run)->item(0);
+            if (!$properties instanceof \DOMElement) {
+                $properties = $document->createElementNS($namespace, 'w:rPr');
+                $run->insertBefore($properties, $run->firstChild);
+            }
+            foreach (['sz', 'szCs'] as $propertyName) {
+                $size = $xpath->query('./w:' . $propertyName, $properties)->item(0);
+                if (!$size instanceof \DOMElement) {
+                    $size = $document->createElementNS($namespace, 'w:' . $propertyName);
+                    $properties->appendChild($size);
+                }
+                $size->setAttributeNS($namespace, 'w:val', $halfPoints);
+            }
+        }
+    }
+
+    /** Mengisi sel tabel contoh sambil mempertahankan properti paragraf dan run pertamanya. */
+    private function setTemplateCellText(\DOMDocument $document, \DOMXPath $xpath, \DOMElement $cell, string $value): void
+    {
+        $textNodes = $xpath->query('.//w:t', $cell);
+        if ($textNodes->length > 0) {
+            $this->setTemplateTextNode($textNodes->item(0), $value);
+            for ($index = 1; $index < $textNodes->length; $index++) $this->setTemplateTextNode($textNodes->item($index), '');
+            return;
+        }
+        $paragraph = $xpath->query('./w:p', $cell)->item(0);
+        if (!$paragraph instanceof \DOMElement) {
+            $paragraph = $document->createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:p');
+            $cell->appendChild($paragraph);
+        }
+        $run = $document->createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:r');
+        $text = $document->createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:t');
+        $text->appendChild($document->createTextNode($value));
+        $run->appendChild($text);
+        $paragraph->appendChild($run);
+    }
+
+    /** Mengganti isi text node sebagai teks literal agar karakter XML khusus selalu diamankan. */
+    private function setTemplateTextNode(\DOMNode $node, string $value): void
+    {
+        while ($node->firstChild !== null) $node->removeChild($node->firstChild);
+        $node->appendChild($node->ownerDocument->createTextNode($value));
+    }
+
+    /** Memformat timestamp tiket ke bentuk yang konsisten dengan tabel mentor. */
+    private function ticketDateTime(string $value): string
+    {
+        $date = new DateTimeImmutable($value);
+        return $date->format('Y-m-d H:i:s');
+    }
+
+    /** Menampilkan durasi sumber, atau hasil menit terverifikasi bila teks sumber tidak tersedia. */
+    private function ticketDuration(array $row): string
+    {
+        if (($row['response_time_minutes'] ?? null) === null) return '-';
+        $minutes = (int) $row['response_time_minutes'];
+        return intdiv($minutes, 60) . ':' . str_pad((string) ($minutes % 60), 2, '0', STR_PAD_LEFT);
+    }
+
+    /** Menyusun halaman template dengan teks statis dan anchor utuh untuk konten dinamis. */
+    private function layoutTemplateDocumentXml(?array $logo): string
+    {
+        $parts = [$this->paragraph('', 'CoverSpacer')];
+        if ($logo !== null) $parts[] = $this->logoDrawing((int) $logo['width'], (int) $logo['height']);
+        $parts[] = $this->paragraph('LAPORAN PERFORMANSI BULANAN', 'CoverTitle');
+        $parts[] = $this->paragraph('PERIODE {{report_period}}', 'CoverPeriod');
+        $parts[] = $this->paragraph('', 'CoverContactSpacer');
+        $parts[] = $this->paragraph('{{company_address}}', 'CoverContact');
+        $parts[] = $this->paragraph('Phone : {{company_phone}}', 'CoverContact');
+        $parts[] = $this->paragraph('Fax : {{company_fax}}', 'CoverContact');
+        $parts[] = $this->pageBreak();
+        $parts[] = $this->paragraph('', 'TitlePageSpacer');
+        $parts[] = $this->paragraph('LAPORAN PERFORMANSI MERCHANT', 'TitlePageHeading');
+        $parts[] = $this->paragraph('UNTUK', 'TitlePageFor');
+        $parts[] = $this->paragraph('{{merchant_name}}', 'TitlePageMerchant');
+        $parts[] = $this->paragraph('Jakarta, {{issued_at}}', 'TitlePageDate');
+        $parts[] = $this->pageBreak();
+        $parts[] = $this->paragraph('DAFTAR ISI', 'TableOfContentsTitle');
+        $parts[] = $this->tableOfContents();
+        $pages = [
+            ['{{report_period}}', [['{{summary_introduction}}', 'BodyText'], ['{{table_monthly_summary}}', 'TemplateAnchor'], ['Berdasarkan tabel di atas, total transaksi pada periode {{report_period}} adalah sebagai berikut:', 'SummaryLead'], ['{{list_monthly_summary}}', 'TemplateAnchor'], ['{{chart_and_narrative_monthly_comparison}}', 'TemplateAnchor']]],
+            ['PERFORMANCE', [['{{performance_introduction}}', 'BodyText'], ['TINGKAT KEBERHASILAN TRANSAKSI TERHADAP TRANSAKSI GAGAL', 'Heading2'], ['{{performance_lead}}', 'BodyText'], ['{{table_payment_performance}}', 'TemplateAnchor'], ['{{narrative_payment_performance}}', 'TemplateAnchor'], ['{{chart_payment_performance}}', 'TemplateAnchor']]],
+            ['TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN CHANNEL', [['Berikut adalah jumlah transaksi berdasarkan pada channel pembayaran', 'BodyText'], ['{{table_payment_channel}}', 'TemplateAnchor'], ['{{narrative_payment_channel}}', 'TemplateAnchor']]],
+            ['TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN TOP CHANNEL', [['Berikut adalah ratio yang membandingkan jumlah transaksi sukses payment dan transaksi gagal timeout', 'BodyText'], ['{{chart_top_payment_channel}}', 'TemplateAnchor'], ['Terlihat bahwa ratio terhadap TOP pembayaran berdasarkan channel pembayaran yang digunakan adalah sebagai berikut :', 'BodyText'], ['{{list_top_payment_channel}}', 'TemplateAnchor']]],
+            ['TREND TRANSAKSI HARIAN', [['{{daily_trend_introduction}}', 'BodyText'], ['{{chart_daily_transaction}}', 'TemplateAnchor'], ['{{narrative_daily_transaction}}', 'TemplateAnchor'], ['{{table_daily_transaction}}', 'TemplateAnchor']]],
+            ['ADUAN DAN INSIDEN', [['{{report_period}}', 'Heading2'], ['TIKET ADUAN', 'Heading2'], ['{{narrative_complaint_ticket}}', 'TemplateAnchor'], ['{{table_complaint_ticket}}', 'TemplateAnchor'], ['{{chart_complaint_ticket}}', 'TemplateAnchor']]],
+            ['LAPORAN INSIDEN', [['{{narrative_incident}}', 'TemplateAnchor'], ['{{table_manual_incident}}', 'TemplateAnchor']]],
+            ['KESIMPULAN', [['{{list_conclusion}}', 'TemplateAnchor'], ['Demikian laporan ini kami sampaikan dan selanjutnya laporan ini dapat digunakan sebagai kelengkapan dokumen lain sebagaimana mestinya.', 'BodyText']]],
+        ];
+        foreach ($pages as [$heading, $content]) {
+            $parts[] = $this->pageBreak();
+            $parts[] = $this->paragraph($heading, str_starts_with($heading, '{{') || in_array($heading, ['PERFORMANCE', 'ADUAN DAN INSIDEN', 'KESIMPULAN'], true) ? 'Heading1' : 'Heading2');
+            foreach ($content as [$text, $style]) $parts[] = $this->paragraph($text, $style);
+        }
+        $parts[] = $this->pageBreak();
+        $parts[] = $this->closingStaticPages();
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' . implode('', $parts)
+            . '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1080" w:bottom="1440" w:left="1080" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>';
+    }
+
     /** Membentuk satu paragraf Word menggunakan style terdaftar dan teks aman. */
     private function paragraph(string $text, string $style): string
     {
@@ -175,7 +578,7 @@ final class WordReportGenerator
     /** Membentuk field TOC Word yang mengambil heading level satu sampai tiga. */
     private function tableOfContents(): string
     {
-        return '<w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
+        return '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
             . '<w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r>'
             . '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
             . '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>';
@@ -191,7 +594,18 @@ final class WordReportGenerator
     /** Membentuk tabel Word asli berisi inquiry, payment, nominal, dan grand total. */
     private function summaryTable(array $summary, string $period): string
     {
-        $rows = [$this->tableRow(['NAMA BANK', $period, '', ''], true), $this->tableRow(['', 'Inquiry Success', 'Payment Success', 'Amount'], true)];
+        $rows = [
+            '<w:tr>'
+                . $this->tableCell('NAMA BANK', 3300, true, 'center', true, '<w:vMerge w:val="restart"/>')
+                . $this->tableCell($period, 6400, true, 'center', true, '<w:gridSpan w:val="3"/>')
+                . '</w:tr>',
+            '<w:tr>'
+                . $this->tableCell('', 3300, true, 'center', true, '<w:vMerge/>')
+                . $this->tableCell('Inquiry Success', 1900, true, 'center', true)
+                . $this->tableCell('Payment Success', 1900, true, 'center', true)
+                . $this->tableCell('Amount', 2600, true, 'center', true)
+                . '</w:tr>',
+        ];
         foreach ($summary['rows'] as $row) {
             $rows[] = $this->tableRow([
                 (string) $row['partner_channel'],
@@ -206,24 +620,26 @@ final class WordReportGenerator
             $this->integer((int) $summary['totals']['payment_success']),
             $this->amount((float) $summary['totals']['payment_amount']),
         ], true);
-        return '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
+        return '<w:tbl><w:tblPr><w:jc w:val="center"/><w:tblW w:w="0" w:type="auto"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
             . '<w:top w:val="single" w:sz="4" w:color="808080"/><w:left w:val="single" w:sz="4" w:color="808080"/><w:bottom w:val="single" w:sz="4" w:color="808080"/><w:right w:val="single" w:sz="4" w:color="808080"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/>'
             . '</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="3300"/><w:gridCol w:w="1900"/><w:gridCol w:w="1900"/><w:gridCol w:w="2600"/></w:tblGrid>' . implode('', $rows) . '</w:tbl>';
     }
 
     /** Membentuk satu baris tabel dengan opsi format tebal untuk header dan total. */
-    private function tableRow(array $values, bool $bold = false): string
+    private function tableRow(array $values, bool $bold = false, bool $header = false): string
     {
         $cells = '';
-        foreach ($values as $index => $value) $cells .= $this->tableCell((string) $value, [3300, 1900, 1900, 2600][$index], $bold, $index === 0 ? 'left' : 'right');
+        foreach ($values as $index => $value) $cells .= $this->tableCell((string) $value, [3300, 1900, 1900, 2600][$index], $bold, $header ? 'center' : ($index === 0 ? 'left' : 'right'), $header);
         return '<w:tr>' . $cells . '</w:tr>';
     }
 
     /** Membentuk sel tabel aman dengan lebar, alignment, dan format teks terkontrol. */
-    private function tableCell(string $value, int $width, bool $bold, string $alignment): string
+    private function tableCell(string $value, int $width, bool $bold, string $alignment, bool $header = false, string $additionalCellProperties = ''): string
     {
         $escaped = htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-        return "<w:tc><w:tcPr><w:tcW w:w=\"{$width}\" w:type=\"dxa\"/><w:tcMar><w:top w:w=\"80\" w:type=\"dxa\"/><w:left w:w=\"100\" w:type=\"dxa\"/><w:bottom w:w=\"80\" w:type=\"dxa\"/><w:right w:w=\"100\" w:type=\"dxa\"/></w:tcMar></w:tcPr><w:p><w:pPr><w:jc w:val=\"{$alignment}\"/></w:pPr><w:r><w:rPr>" . ($bold ? '<w:b/>' : '') . "</w:rPr><w:t xml:space=\"preserve\">{$escaped}</w:t></w:r></w:p></w:tc>";
+        $shading = $header ? '<w:shd w:val="clear" w:color="auto" w:fill="C00000"/>' : '';
+        $fontColor = $header ? '<w:color w:val="FFFFFF"/>' : '';
+        return "<w:tc><w:tcPr><w:tcW w:w=\"{$width}\" w:type=\"dxa\"/>{$additionalCellProperties}{$shading}<w:tcMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:left w:w=\"100\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:right w:w=\"100\" w:type=\"dxa\"/></w:tcMar></w:tcPr><w:p><w:pPr><w:jc w:val=\"{$alignment}\"/><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr>" . ($bold ? '<w:b/>' : '') . $fontColor . "</w:rPr><w:t xml:space=\"preserve\">{$escaped}</w:t></w:r></w:p></w:tc>";
     }
 
     /** Memformat bilangan transaksi dengan pemisah ribuan Indonesia. */
@@ -275,7 +691,7 @@ final class WordReportGenerator
     private function comparisonLayout(array $comparison): string
     {
         $narrative = $this->paragraph($this->paymentComparisonNarrative($comparison), 'BodyText');
-        return '<w:tbl><w:tblPr><w:tblW w:w="9700" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
+        return '<w:tbl><w:tblPr><w:jc w:val="center"/><w:tblW w:w="9700" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
             . '<w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="nil"/><w:right w:val="nil"/><w:insideH w:val="nil"/><w:insideV w:val="nil"/>'
             . '</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="5600"/><w:gridCol w:w="4100"/></w:tblGrid><w:tr>'
             . '<w:tc><w:tcPr><w:tcW w:w="5600" w:type="dxa"/><w:vAlign w:val="center"/><w:tcMar><w:right w:w="180" w:type="dxa"/></w:tcMar></w:tcPr>' . $this->chartDrawing() . '</w:tc>'
@@ -288,16 +704,16 @@ final class WordReportGenerator
     {
         $rows = [
             '<w:tr>'
-                . $this->performanceTableCell('NAMA BANK', 2800, true, 'center', 1, 'restart')
-                . $this->performanceTableCell('Response Code', 4500, true, 'center', 3)
-                . $this->performanceTableCell('SR', 1600, true, 'center', 1, 'restart')
+                . $this->performanceTableCell('NAMA BANK', 2800, true, 'center', 1, 'restart', true)
+                . $this->performanceTableCell('Response Code', 4500, true, 'center', 3, null, true)
+                . $this->performanceTableCell('SR', 1600, true, 'center', 1, 'restart', true)
                 . '</w:tr>',
             '<w:tr>'
-                . $this->performanceTableCell('', 2800, true, 'center', 1, 'continue')
-                . $this->performanceTableCell('0', 1500, true, 'center')
-                . $this->performanceTableCell('68', 1500, true, 'center')
-                . $this->performanceTableCell('82', 1500, true, 'center')
-                . $this->performanceTableCell('', 1600, true, 'center', 1, 'continue')
+                . $this->performanceTableCell('', 2800, true, 'center', 1, 'continue', true)
+                . $this->performanceTableCell('0', 1500, true, 'center', 1, null, true)
+                . $this->performanceTableCell('68', 1500, true, 'center', 1, null, true)
+                . $this->performanceTableCell('82', 1500, true, 'center', 1, null, true)
+                . $this->performanceTableCell('', 1600, true, 'center', 1, 'continue', true)
                 . '</w:tr>',
         ];
         foreach ($performance['rows'] as $row) {
@@ -317,7 +733,7 @@ final class WordReportGenerator
             $this->performanceCount((int) $totals['rc_82']),
             $this->percentageTwoDecimals((float) $totals['success_rate']),
         ], true);
-        return '<w:tbl><w:tblPr><w:tblW w:w="9700" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
+        return '<w:tbl><w:tblPr><w:jc w:val="center"/><w:tblW w:w="9700" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
             . '<w:top w:val="single" w:sz="4" w:color="808080"/><w:left w:val="single" w:sz="4" w:color="808080"/><w:bottom w:val="single" w:sz="4" w:color="808080"/><w:right w:val="single" w:sz="4" w:color="808080"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/>'
             . '</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2800"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="1600"/></w:tblGrid>' . implode('', $rows) . '</w:tbl>';
     }
@@ -336,16 +752,16 @@ final class WordReportGenerator
     {
         $rows = [
             '<w:tr>'
-                . $this->performanceTableCell('CHANNEL', 2800, true, 'center', 1, 'restart')
-                . $this->performanceTableCell('Response Code', 4500, true, 'center', 3)
-                . $this->performanceTableCell('SR', 1600, true, 'center', 1, 'restart')
+                . $this->performanceTableCell('CHANNEL', 2800, true, 'center', 1, 'restart', true)
+                . $this->performanceTableCell('Response Code', 4500, true, 'center', 3, null, true)
+                . $this->performanceTableCell('SR', 1600, true, 'center', 1, 'restart', true)
                 . '</w:tr>',
             '<w:tr>'
-                . $this->performanceTableCell('', 2800, true, 'center', 1, 'continue')
-                . $this->performanceTableCell('0', 1500, true, 'center')
-                . $this->performanceTableCell('68', 1500, true, 'center')
-                . $this->performanceTableCell('82', 1500, true, 'center')
-                . $this->performanceTableCell('', 1600, true, 'center', 1, 'continue')
+                . $this->performanceTableCell('', 2800, true, 'center', 1, 'continue', true)
+                . $this->performanceTableCell('0', 1500, true, 'center', 1, null, true)
+                . $this->performanceTableCell('68', 1500, true, 'center', 1, null, true)
+                . $this->performanceTableCell('82', 1500, true, 'center', 1, null, true)
+                . $this->performanceTableCell('', 1600, true, 'center', 1, 'continue', true)
                 . '</w:tr>',
         ];
         foreach ($performance['rows'] as $row) {
@@ -365,7 +781,7 @@ final class WordReportGenerator
             $this->performanceCount((int) $totals['rc_82']),
             $this->percentageTwoDecimals((float) $totals['success_rate']),
         ], true);
-        return '<w:tbl><w:tblPr><w:tblW w:w="9700" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
+        return '<w:tbl><w:tblPr><w:jc w:val="center"/><w:tblW w:w="9700" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>'
             . '<w:top w:val="single" w:sz="4" w:color="808080"/><w:left w:val="single" w:sz="4" w:color="808080"/><w:bottom w:val="single" w:sz="4" w:color="808080"/><w:right w:val="single" w:sz="4" w:color="808080"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/>'
             . '</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2800"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="1600"/></w:tblGrid>' . implode('', $rows) . '</w:tbl>';
     }
@@ -387,13 +803,15 @@ final class WordReportGenerator
     }
 
     /** Membentuk sel tabel performance termasuk merge header vertikal dan horizontal. */
-    private function performanceTableCell(string $value, int $width, bool $bold, string $alignment, int $gridSpan = 1, ?string $verticalMerge = null): string
+    private function performanceTableCell(string $value, int $width, bool $bold, string $alignment, int $gridSpan = 1, ?string $verticalMerge = null, bool $header = false): string
     {
         $escaped = htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
         $merge = $verticalMerge === null ? '' : '<w:vMerge' . ($verticalMerge === 'restart' ? ' w:val="restart"' : '') . '/>';
         $span = $gridSpan > 1 ? '<w:gridSpan w:val="' . $gridSpan . '"/>' : '';
-        return '<w:tc><w:tcPr><w:tcW w:w="' . $width . '" w:type="dxa"/>' . $span . $merge . '<w:vAlign w:val="center"/></w:tcPr>'
-            . '<w:p><w:pPr><w:jc w:val="' . $alignment . '"/></w:pPr><w:r><w:rPr>' . ($bold ? '<w:b/>' : '') . '</w:rPr><w:t xml:space="preserve">' . $escaped . '</w:t></w:r></w:p></w:tc>';
+        $shading = $header ? '<w:shd w:val="clear" w:color="auto" w:fill="C00000"/>' : '';
+        $fontColor = $header ? '<w:color w:val="FFFFFF"/>' : '';
+        return '<w:tc><w:tcPr><w:tcW w:w="' . $width . '" w:type="dxa"/>' . $span . $merge . $shading . '<w:vAlign w:val="center"/></w:tcPr>'
+            . '<w:p><w:pPr><w:jc w:val="' . $alignment . '"/><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:rPr>' . ($bold ? '<w:b/>' : '') . $fontColor . '</w:rPr><w:t xml:space="preserve">' . $escaped . '</w:t></w:r></w:p></w:tc>';
     }
 
     /** Menampilkan nol RC timeout sebagai tanda strip seperti tabel pada template. */
@@ -474,7 +892,7 @@ final class WordReportGenerator
     /** Membentuk tabel detail transaksi harian dengan kolom yang sama seperti template. */
     private function dailyTrendTable(array $dailyTrend): string
     {
-        $rows = ['<w:tr><w:trPr><w:tblHeader/></w:trPr>' . $this->dailyTableRowCells(['Tanggal', 'Sukses', 'RC 68', 'RC 82', 'SR'], true) . '</w:tr>'];
+        $rows = ['<w:tr><w:trPr><w:tblHeader/></w:trPr>' . $this->dailyTableRowCells(['Tanggal', 'Sukses', 'RC 68', 'RC 82', 'SR'], true, true) . '</w:tr>'];
         foreach ($dailyTrend['rows'] as $row) {
             $rows[] = '<w:tr>' . $this->dailyTableRowCells([
                 (string) $row['date'],
@@ -494,11 +912,11 @@ final class WordReportGenerator
     }
 
     /** Membentuk kumpulan lima sel untuk satu baris tabel tren harian. */
-    private function dailyTableRowCells(array $values, bool $bold = false): string
+    private function dailyTableRowCells(array $values, bool $bold = false, bool $header = false): string
     {
         $widths = [2500, 1500, 1500, 1500, 1500];
         $cells = '';
-        foreach ($values as $index => $value) $cells .= $this->tableCell((string) $value, $widths[$index], $bold, $index === 0 ? 'left' : 'right');
+        foreach ($values as $index => $value) $cells .= $this->tableCell((string) $value, $widths[$index], $bold, $header ? 'center' : ($index === 0 ? 'left' : 'right'), $header);
         return $cells;
     }
 
@@ -548,16 +966,16 @@ final class WordReportGenerator
     /** Membentuk tabel ringkasan jumlah Ticket No unik per segmentasi keluhan. */
     private function ticketSummaryTable(array $summary): string
     {
-        $rows = ['<w:tr>' . $this->ticketTableCells(['Segmentasi Keluhan', 'Total Keluhan'], true) . '</w:tr>'];
+        $rows = ['<w:tr>' . $this->ticketTableCells(['Segmentasi Keluhan', 'Total Keluhan'], true, true) . '</w:tr>'];
         foreach ($summary['segments'] as $row) $rows[] = '<w:tr>' . $this->ticketTableCells([(string) $row['complaint_segment'], $this->integer((int) $row['total'])]) . '</w:tr>';
         $rows[] = '<w:tr>' . $this->ticketTableCells(['Grand Total', $this->integer((int) $summary['total'])], true) . '</w:tr>';
         return '<w:tbl><w:tblPr><w:tblW w:w="6500" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders><w:top w:val="single" w:sz="4" w:color="808080"/><w:left w:val="single" w:sz="4" w:color="808080"/><w:bottom w:val="single" w:sz="4" w:color="808080"/><w:right w:val="single" w:sz="4" w:color="808080"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="4700"/><w:gridCol w:w="1800"/></w:tblGrid>' . implode('', $rows) . '</w:tbl>';
     }
 
     /** Membentuk dua sel untuk satu baris tabel ringkasan tiket. */
-    private function ticketTableCells(array $values, bool $bold = false): string
+    private function ticketTableCells(array $values, bool $bold = false, bool $header = false): string
     {
-        return $this->tableCell((string) $values[0], 4700, $bold, 'left') . $this->tableCell((string) $values[1], 1800, $bold, 'right');
+        return $this->tableCell((string) $values[0], 4700, $bold, $header ? 'center' : 'left', $header) . $this->tableCell((string) $values[1], 1800, $bold, $header ? 'center' : 'right', $header);
     }
 
     /** Menanam pie chart segmentasi tiket aduan ke dokumen Word. */
@@ -573,7 +991,7 @@ final class WordReportGenerator
         $headers = ['Tanggal Kendala', 'Kendala', 'Penyebab Kendala', 'Kategori Kendala', 'Penyelesaian', 'Durasi'];
         $widths = [1400, 1800, 1800, 1600, 1800, 1200];
         $cells = '';
-        foreach ($headers as $index => $header) $cells .= $this->tableCell($header, $widths[$index], true, 'center');
+        foreach ($headers as $index => $header) $cells .= $this->tableCell($header, $widths[$index], true, 'center', true);
         return '<w:tbl><w:tblPr><w:tblW w:w="9600" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders><w:top w:val="single" w:sz="4" w:color="808080"/><w:left w:val="single" w:sz="4" w:color="808080"/><w:bottom w:val="single" w:sz="4" w:color="808080"/><w:right w:val="single" w:sz="4" w:color="808080"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/></w:tblBorders></w:tblPr>'
             . '<w:tblGrid><w:gridCol w:w="1400"/><w:gridCol w:w="1800"/><w:gridCol w:w="1800"/><w:gridCol w:w="1600"/><w:gridCol w:w="1800"/><w:gridCol w:w="1200"/></w:tblGrid>'
             . '<w:tr><w:trPr><w:tblHeader/></w:trPr>' . $cells . '</w:tr>'
@@ -710,6 +1128,7 @@ final class WordReportGenerator
             . '<w:style w:type="paragraph" w:styleId="BodyText"><w:name w:val="Body Text"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="both"/><w:spacing w:after="240" w:line="276" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>'
             . '<w:style w:type="paragraph" w:styleId="SummaryLead"><w:name w:val="Summary Lead"/><w:basedOn w:val="BodyText"/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr></w:style>'
             . '<w:style w:type="paragraph" w:styleId="SummaryBullet"><w:name w:val="Summary Bullet"/><w:basedOn w:val="BodyText"/><w:pPr><w:ind w:left="360" w:hanging="240"/><w:spacing w:after="100"/></w:pPr></w:style>'
+            . '<w:style w:type="paragraph" w:styleId="TemplateAnchor"><w:name w:val="Template Anchor"/><w:basedOn w:val="BodyText"/><w:pPr><w:spacing w:before="120" w:after="120"/><w:shd w:val="clear" w:color="auto" w:fill="FFF2CC"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:b/><w:color w:val="9C6500"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>'
             . '</w:styles>';
     }
 
@@ -779,6 +1198,8 @@ final class WordReportGenerator
         if ($value['top_payment_channels'] === [] || count($value['top_payment_channels']) > 5) throw new RuntimeException('Data top payment channel laporan tidak valid.');
         if (!isset($value['daily_trend']['rows'], $value['daily_trend']['metrics']) || !is_array($value['daily_trend']['rows']) || !is_array($value['daily_trend']['metrics']) || $value['daily_trend']['rows'] === []) throw new RuntimeException('Data tren harian laporan tidak valid.');
         if (!isset($value['ticket_summary']['segments'], $value['ticket_summary']['statuses'], $value['ticket_summary']['total']) || !is_array($value['ticket_summary']['segments']) || !is_array($value['ticket_summary']['statuses'])) throw new RuntimeException('Data ringkasan tiket laporan tidak valid.');
+        if (!isset($value['ticket_details'])) $value['ticket_details'] = [];
+        if (!is_array($value['ticket_details'])) throw new RuntimeException('Data detail tiket laporan tidak valid.');
         return $value;
     }
 }

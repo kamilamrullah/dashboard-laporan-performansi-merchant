@@ -106,6 +106,15 @@ final class ReportSummaryService
         $ticketSegments = array_map(static fn (array $row): array => ['complaint_segment' => (string) $row['complaint_segment'], 'total' => (int) $row['total']], $ticketSource['segments']);
         $ticketStatuses = array_map(static fn (array $row): array => ['status' => (string) $row['status'], 'total' => (int) $row['total']], $ticketSource['statuses']);
         $ticketSummary = ['segments' => $ticketSegments, 'statuses' => $ticketStatuses, 'total' => array_sum(array_column($ticketSegments, 'total'))];
+        $ticketDetails = array_map(static fn (array $row): array => [
+            'complaint_segment' => trim((string) $row['complaint_segment']),
+            'opened_at' => (string) $row['opened_at'],
+            'closed_at' => $row['closed_at'] === null ? null : (string) $row['closed_at'],
+            'duration_raw' => $row['duration_raw'] === null ? null : trim((string) $row['duration_raw']),
+            'duration_minutes' => $row['duration_minutes'] === null ? null : (int) $row['duration_minutes'],
+            'response_time_minutes' => $row['response_time_minutes'] === null ? null : (int) $row['response_time_minutes'],
+            'total' => 1,
+        ], $this->repository->complaintTicketDetails($merchantId, $period->format('Y-m-d'), $period->modify('first day of next month')->format('Y-m-d')));
         return ['rows' => $rows, 'totals' => $totals, 'metrics' => [
             'top_inquiry' => $this->topChannel($rows, 'inquiry_success'),
             'top_payment' => $this->topChannel($rows, 'payment_success'),
@@ -120,7 +129,7 @@ final class ReportSummaryService
                 'percentage_change' => $previousPayment > 0 ? ($difference / $previousPayment) * 100 : null,
                 'direction' => $difference > 0 ? 'increase' : ($difference < 0 ? 'decrease' : 'stable'),
             ],
-        ], 'performance' => ['rows' => $performanceRows, 'totals' => $performanceTotals], 'payment_channel_performance' => ['rows' => $paymentChannelRows, 'totals' => $paymentChannelTotals], 'top_payment_channels' => $topPaymentChannels, 'daily_trend' => $dailyTrend, 'ticket_summary' => $ticketSummary];
+        ], 'performance' => ['rows' => $performanceRows, 'totals' => $performanceTotals], 'payment_channel_performance' => ['rows' => $paymentChannelRows, 'totals' => $paymentChannelTotals], 'top_payment_channels' => $topPaymentChannels, 'daily_trend' => $dailyTrend, 'ticket_summary' => $ticketSummary, 'ticket_details' => $ticketDetails];
     }
 
     /** Memilih channel dengan nilai tertinggi dan memakai nama alfabetis untuk memecahkan nilai seri. */

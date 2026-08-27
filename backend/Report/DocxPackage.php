@@ -9,6 +9,75 @@ use ZipArchive;
 /** Membentuk paket Open XML minimum yang dapat dibuka sebagai dokumen Microsoft Word. */
 final class DocxPackage
 {
+    /** Membaca satu bagian dari paket DOCX untuk diproses generator berbasis template. */
+    public function readPart(string $templatePath, string $part): string
+    {
+        $archive = new ZipArchive();
+        if ($archive->open($templatePath) !== true) throw new RuntimeException('Template DOCX tidak dapat dibuka.');
+        try {
+            $contents = $archive->getFromName($part);
+            if ($contents === false) throw new RuntimeException("Bagian {$part} tidak tersedia pada template DOCX.");
+            return $contents;
+        } finally { $archive->close(); }
+    }
+
+    /** Menyalin template, mengganti XML dokumen, dan menambahkan media dinamis secara atomik. */
+    public function writeFromTemplate(string $templatePath, string $outputPath, string $documentXml, array $media, array $relationships): void
+    {
+        if (!class_exists(ZipArchive::class)) throw new RuntimeException('Ekstensi PHP ZipArchive diperlukan untuk membuat laporan Word.');
+        if (!is_file($templatePath) || !is_readable($templatePath)) throw new RuntimeException('Template teknis laporan tidak tersedia.');
+        $directory = dirname($outputPath);
+        if (!is_dir($directory) && !mkdir($directory, 0750, true) && !is_dir($directory)) throw new RuntimeException('Folder keluaran laporan tidak dapat dibuat.');
+        $temporaryPath = tempnam($directory, '.docx-template-');
+        if ($temporaryPath === false) throw new RuntimeException('File sementara laporan tidak dapat dibuat.');
+        try {
+            if (!copy($templatePath, $temporaryPath)) throw new RuntimeException('Template laporan gagal disalin.');
+            $archive = new ZipArchive();
+            if ($archive->open($temporaryPath) !== true) throw new RuntimeException('Salinan template laporan tidak dapat dibuka.');
+            try {
+                if (!$archive->addFromString('word/document.xml', $documentXml)) throw new RuntimeException('XML laporan gagal diperbarui.');
+                $relationshipXml = $archive->getFromName('word/_rels/document.xml.rels');
+                if ($relationshipXml === false) throw new RuntimeException('Relationship template laporan tidak tersedia.');
+                $entries = '';
+                foreach ($relationships as $relationshipId => $target) {
+                    $entries .= '<Relationship Id="' . $this->escape((string) $relationshipId) . '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/' . $this->escape((string) $target) . '"/>';
+                }
+                $relationshipXml = str_replace('</Relationships>', $entries . '</Relationships>', $relationshipXml);
+                if (str_contains($documentXml, 'rId25')) {
+                    if (str_contains($relationshipXml, 'Id="rId25"')) throw new RuntimeException('Relationship footer template bertabrakan dengan relationship yang sudah ada.');
+                    $footerRelationship = '<Relationship Id="rId25" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="generated-footer.xml"/>';
+                    $relationshipXml = str_replace('</Relationships>', $footerRelationship . '</Relationships>', $relationshipXml);
+                    $footerXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        . '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                        . '<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
+                        . '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+                        . '<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t>1</w:t></w:r>'
+                        . '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>';
+                    if (!$archive->addFromString('word/generated-footer.xml', $footerXml)) throw new RuntimeException('Footer nomor halaman gagal ditambahkan.');
+                    $contentTypesXml = $archive->getFromName('[Content_Types].xml');
+                    if ($contentTypesXml === false) throw new RuntimeException('Content type template laporan tidak tersedia.');
+                    if (!str_contains($contentTypesXml, 'PartName="/word/generated-footer.xml"')) {
+                        $contentTypesXml = str_replace('</Types>', '<Override PartName="/word/generated-footer.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>', $contentTypesXml);
+                        if (!$archive->addFromString('[Content_Types].xml', $contentTypesXml)) throw new RuntimeException('Content type footer gagal ditambahkan.');
+                    }
+                }
+                if (!$archive->addFromString('word/_rels/document.xml.rels', $relationshipXml)) throw new RuntimeException('Relationship grafik atau footer laporan gagal diperbarui.');
+                $settingsXml = $archive->getFromName('word/settings.xml');
+                if ($settingsXml === false) throw new RuntimeException('Pengaturan template laporan tidak tersedia.');
+                $settingsXml = (string) preg_replace('/<w:updateFields\b[^>]*\/?>(?:<\/w:updateFields>)?/', '', $settingsXml);
+                if (!$archive->addFromString('word/settings.xml', $settingsXml)) throw new RuntimeException('Pengaturan pembaruan daftar isi gagal disimpan.');
+                foreach ($media as $name => $path) {
+                    if (!is_file($path) || !is_readable($path)) throw new RuntimeException("Media laporan {$name} tidak tersedia.");
+                    if (!$archive->addFile($path, 'word/media/' . $name)) throw new RuntimeException("Media laporan {$name} gagal ditambahkan.");
+                }
+            } finally { $archive->close(); }
+            if (is_file($outputPath) && !unlink($outputPath)) throw new RuntimeException('File laporan lama tidak dapat diganti.');
+            if (!rename($temporaryPath, $outputPath)) throw new RuntimeException('File laporan gagal disimpan.');
+        } finally {
+            if (is_file($temporaryPath)) unlink($temporaryPath);
+        }
+    }
+
     /** Menulis bagian-bagian XML dokumen ke file DOCX secara atomik. */
     public function write(string $outputPath, string $documentXml, string $stylesXml, array $metadata, array $media = []): void
     {
@@ -113,11 +182,11 @@ final class DocxPackage
             . '</w:numbering>';
     }
 
-    /** Meminta Microsoft Word memperbarui field dinamis seperti daftar isi saat dokumen dibuka. */
+    /** Menyimpan pengaturan Word tanpa pembaruan field prematur sebelum pagination selesai. */
     private function settings(): string
     {
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            . '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:updateFields w:val="true"/></w:settings>';
+            . '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>';
     }
 
     /** Membentuk metadata inti dokumen dengan karakter XML yang sudah diamankan. */

@@ -29,8 +29,8 @@ final class SummaryChartRenderer
             imageantialias($image, true);
             $regularFont = $this->fontPath('calibri.ttf');
             $boldFont = $this->fontPath('calibrib.ttf');
-            $this->centeredText($image, 'TIKET ADUAN PERIODE ' . $periodLabel, 24, 480, 55, $text, $boldFont);
-            if ($segments === []) $this->centeredText($image, 'Tidak terdapat tiket aduan pada periode laporan', 18, 480, 320, $text, $regularFont);
+            $this->centeredText($image, 'TIKET ADUAN PERIODE ' . $periodLabel, 28, 480, 58, $text, $boldFont);
+            if ($segments === []) $this->centeredText($image, 'Tidak terdapat tiket aduan pada periode laporan', 22, 480, 320, $text, $regularFont);
             $total = max(1, array_sum(array_column($segments, 'total')));
             $start = 270;
             $items = [];
@@ -52,15 +52,15 @@ final class SummaryChartRenderer
                 imageline($image, $anchorX, $anchorY, $boxLeft + 90, $boxTop + 35, $border);
                 imagefilledrectangle($image, $boxLeft, $boxTop, $boxLeft + 180, $boxTop + 70, $white);
                 imagerectangle($image, $boxLeft, $boxTop, $boxLeft + 180, $boxTop + 70, $border);
-                $this->centeredText($image, (string) $item['segment']['complaint_segment'], 10, $boxLeft + 90, $boxTop + 28, $text, $regularFont);
-                $this->centeredText($image, (string) $item['segment']['total'], 11, $boxLeft + 90, $boxTop + 54, $text, $regularFont);
+                $this->centeredText($image, (string) $item['segment']['complaint_segment'], 12, $boxLeft + 90, $boxTop + 28, $text, $regularFont);
+                $this->centeredText($image, (string) $item['segment']['total'], 14, $boxLeft + 90, $boxTop + 56, $text, $boldFont);
             }
             $legendCount = count($segments);
             $slotWidth = (int) floor(900 / max(1, $legendCount));
             foreach (array_values($segments) as $index => $segment) {
                 $center = 30 + (int) ($slotWidth / 2) + ($index * $slotWidth);
                 imagefilledrectangle($image, $center - 85, 572, $center - 73, 584, $colors[$index % count($colors)]);
-                $this->centeredText($image, (string) $segment['complaint_segment'], 10, $center + 15, 585, $text, $regularFont);
+                $this->centeredText($image, (string) $segment['complaint_segment'], 12, $center + 15, 585, $text, $regularFont);
             }
             if (!imagepng($image, $outputPath, 6)) throw new RuntimeException('Grafik tiket aduan gagal disimpan.');
         } finally {
@@ -84,14 +84,14 @@ final class SummaryChartRenderer
             imagefill($image, 0, 0, $white);
             imageantialias($image, true);
             $regularFont = $this->fontPath('calibri.ttf');
-            $this->centeredText($image, 'TREND TRANSAKSI PAYMENT', 22, 750, 40, $text, $regularFont);
+            $this->centeredText($image, 'TREND TRANSAKSI PAYMENT', 27, 750, 44, $text, $regularFont);
             $maximum = max(1, ...array_map(static fn (array $row): int => max((int) $row['success'], (int) $row['rc_68'] + (int) $row['rc_82']), $rows));
             $axisMaximum = max(5, (int) ceil($maximum / 5) * 5);
             for ($step = 0; $step <= 5; $step++) {
                 $value = (int) round($axisMaximum * (5 - $step) / 5);
                 $y = 70 + ($step * 70);
                 imageline($image, 55, $y, 1460, $y, $grid);
-                $this->rightAlignedText($image, (string) $value, 10, 45, $y + 4, $text, $regularFont);
+                $this->rightAlignedText($image, (string) $value, 13, 48, $y + 5, $text, $regularFont);
             }
             $count = count($rows);
             $previousSuccess = null;
@@ -107,12 +107,12 @@ final class SummaryChartRenderer
                 imagefilledellipse($image, $x, $failedY, 5, 5, $orange);
                 $previousSuccess = [$x, $successY];
                 $previousFailed = [$x, $failedY];
-                if ($regularFont !== null && function_exists('imagettftext')) imagettftext($image, 9, 45, $x - 8, 492, $text, $regularFont, (string) $row['date']);
+                if ($regularFont !== null && function_exists('imagettftext')) imagettftext($image, 11, 45, $x - 8, 492, $text, $regularFont, (string) $row['date']);
             }
             imagefilledrectangle($image, 610, 530, 625, 540, $orange);
-            $this->centeredText($image, 'gagal', 11, 655, 541, $text, $regularFont);
+            $this->centeredText($image, 'gagal', 14, 655, 541, $text, $regularFont);
             imageline($image, 710, 535, 735, 535, $blue);
-            $this->centeredText($image, 'Sukses', 11, 775, 541, $text, $regularFont);
+            $this->centeredText($image, 'Sukses', 14, 775, 541, $text, $regularFont);
             if (!imagepng($image, $outputPath, 6)) throw new RuntimeException('Grafik tren harian gagal disimpan.');
         } finally {
             imagedestroy($image);
@@ -141,7 +141,7 @@ final class SummaryChartRenderer
             imagerectangle($image, 0, 0, 899, 619, $border);
             imageantialias($image, true);
             $regularFont = $this->fontPath('calibri.ttf');
-            $this->centeredText($image, 'TOP CHANNEL PEMBAYARAN', 24, 450, 65, $text, $regularFont);
+            $this->centeredText($image, 'TOP CHANNEL PEMBAYARAN', 28, 450, 68, $text, $regularFont);
             $total = max(1, array_sum(array_map(static fn (array $row): int => (int) $row['total'], $channels)));
             $segments = [];
             $start = 0;
@@ -159,14 +159,14 @@ final class SummaryChartRenderer
                 $labelX = count($segments) === 1 ? 450 : (int) round(450 + cos($middle) * 155);
                 $labelY = count($segments) === 1 ? 330 : (int) round(315 + sin($middle) * 70);
                 $valueColor = $segment['index'] === 3 ? $text : $white;
-                $this->centeredText($image, number_format((int) $segment['channel']['total'], 0, ',', '.'), 14, $labelX, $labelY, $valueColor, $regularFont);
+                $this->centeredText($image, number_format((int) $segment['channel']['total'], 0, ',', '.'), 18, $labelX, $labelY, $valueColor, $regularFont);
             }
             $legendWidth = min(760, count($channels) * 210);
             $legendStart = (int) round((900 - $legendWidth) / 2);
             foreach (array_values($channels) as $index => $channel) {
                 $x = $legendStart + ($index * (int) floor($legendWidth / count($channels)));
                 imagefilledrectangle($image, $x, 550, $x + 12, 562, $colors[$index]);
-                $this->centeredText($image, (string) $channel['payment_channel'], 11, $x + 100, 562, $text, $regularFont);
+                $this->centeredText($image, (string) $channel['payment_channel'], 14, $x + 100, 562, $text, $regularFont);
             }
             if (!imagepng($image, $outputPath, 6)) throw new RuntimeException('Grafik top channel gagal disimpan.');
         } finally {
@@ -192,7 +192,7 @@ final class SummaryChartRenderer
             imagerectangle($image, 0, 0, 899, 699, $border);
             imageantialias($image, true);
             $regularFont = $this->fontPath('calibri.ttf');
-            $this->centeredText($image, 'RATION SUKSES & GAGAL PAYMENT', 24, 450, 68, $text, $regularFont);
+            $this->centeredText($image, 'RATION SUKSES & GAGAL PAYMENT', 28, 450, 70, $text, $regularFont);
             $success = (int) ($totals['success'] ?? 0);
             $failed = (int) ($totals['rc_68'] ?? 0) + (int) ($totals['rc_82'] ?? 0);
             $total = max(1, $success + $failed);
@@ -206,14 +206,14 @@ final class SummaryChartRenderer
             imagefilledrectangle($image, 120, 165, 390, 285, $white);
             imagerectangle($image, 120, 165, 390, 285, $border);
             imageline($image, 390, 225, 470, 180, $border);
-            $this->centeredText($image, 'JUMLAH, TRANSAKSI', 14, 255, 215, $text, $regularFont);
-            $this->centeredText($image, 'GAGAL, ' . ($failed > 0 ? number_format($failed, 0, ',', '.') : '-'), 14, 255, 248, $text, $regularFont);
+            $this->centeredText($image, 'JUMLAH, TRANSAKSI', 18, 255, 215, $text, $regularFont);
+            $this->centeredText($image, 'GAGAL, ' . ($failed > 0 ? number_format($failed, 0, ',', '.') : '-'), 18, 255, 252, $text, $regularFont);
             imagefilledrectangle($image, 570, 420, 835, 565, $white);
             imagerectangle($image, 570, 420, 835, 565, $border);
             imageline($image, 570, 470, 535, 450, $border);
-            $this->centeredText($image, 'JUMLAH,', 14, 702, 466, $text, $regularFont);
-            $this->centeredText($image, 'TRANSAKSI SUKSES,', 14, 702, 500, $text, $regularFont);
-            $this->centeredText($image, number_format($success, 0, ',', '.'), 14, 702, 534, $text, $regularFont);
+            $this->centeredText($image, 'JUMLAH,', 18, 702, 462, $text, $regularFont);
+            $this->centeredText($image, 'TRANSAKSI SUKSES,', 18, 702, 502, $text, $regularFont);
+            $this->centeredText($image, number_format($success, 0, ',', '.'), 18, 702, 542, $text, $regularFont);
             if (!imagepng($image, $outputPath, 6)) throw new RuntimeException('Grafik performance gagal disimpan.');
         } finally {
             imagedestroy($image);
@@ -238,7 +238,7 @@ final class SummaryChartRenderer
             imageantialias($image, true);
             $regularFont = $this->fontPath('calibri.ttf');
             $boldFont = $this->fontPath('calibrib.ttf');
-            $this->centeredText($image, 'PERBANDINGAN PAYMENT SUKSES', 24, 600, 45, $text, $boldFont);
+            $this->centeredText($image, 'PERBANDINGAN PAYMENT SUKSES', 28, 600, 50, $text, $boldFont);
             $this->centeredText($image, 'Jumlah transaksi sukses per bulan', 15, 600, 76, $muted, $regularFont);
             $maximum = max(1, (int) $comparison['previous_total'], (int) $comparison['current_total']);
             $axisMaximum = (int) (ceil($maximum / 100) * 100);
@@ -261,8 +261,8 @@ final class SummaryChartRenderer
         $height = (int) round(($value / $maximum) * 320);
         $top = 440 - $height;
         imagefilledrectangle($image, $x, $top, $x + 180, 439, $color);
-        $this->centeredText($image, number_format($value, 0, ',', '.'), 18, $x + 90, max(112, $top - 14), $textColor, $boldFont);
-        $this->centeredText($image, $label, 14, $x + 90, 480, $textColor, $regularFont);
+        $this->centeredText($image, number_format($value, 0, ',', '.'), 22, $x + 90, max(116, $top - 16), $textColor, $boldFont);
+        $this->centeredText($image, $label, 17, $x + 90, 484, $textColor, $regularFont);
     }
 
     /** Menggambar garis bantu dan label skala transaksi pada sumbu vertikal. */
@@ -272,7 +272,7 @@ final class SummaryChartRenderer
             $value = (int) round($maximum * (4 - $step) / 4);
             $y = 120 + ($step * 80);
             imageline($image, 150, $y, 1080, $y, $gridColor);
-            $this->rightAlignedText($image, number_format($value, 0, ',', '.'), 11, 130, $y + 5, $textColor, $font);
+            $this->rightAlignedText($image, number_format($value, 0, ',', '.'), 14, 135, $y + 6, $textColor, $font);
         }
     }
 

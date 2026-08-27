@@ -55,4 +55,9 @@ assert_report_summary($summary['daily_trend']['metrics']['average_success'] === 
 assert_report_summary($summary['ticket_summary']['total'] === 15, 'Total tiket Januari harus menghitung Ticket No unik.');
 assert_report_summary($summary['ticket_summary']['segments'] === [['complaint_segment' => 'Pengecekan Dana', 'total' => 1], ['complaint_segment' => 'Pengecekan Transaksi', 'total' => 2], ['complaint_segment' => 'Permohonan Refund', 'total' => 12]], 'Ringkasan segmentasi tiket tidak sesuai fixture.');
 assert_report_summary($summary['ticket_summary']['statuses'] === [['status' => 'Close', 'total' => 15]], 'Ringkasan status tiket tidak sesuai fixture.');
+assert_report_summary(count($summary['ticket_details']) === 15, 'Detail tiket Januari harus mengikuti jumlah Ticket No pada periode.');
+assert_report_summary($summary['ticket_details'][0]['complaint_segment'] === 'Permohonan Refund', 'Segmentasi detail tiket pertama tidak sesuai fixture.');
+assert_report_summary($summary['ticket_details'][0]['opened_at'] === '2026-01-14 12:11:51', 'Open Time detail tiket harus berasal dari data tiket.');
+assert_report_summary($summary['ticket_details'][0]['response_time_minutes'] === 1695, 'Durasi detail tiket harus menggunakan selisih Close Time dan Open Time.');
+assert_report_summary($summary['ticket_details'][0]['total'] === 1, 'Setiap baris detail tiket harus mewakili satu keluhan unik.');
 echo "ReportSummaryServiceIntegrationTest: OK\n";

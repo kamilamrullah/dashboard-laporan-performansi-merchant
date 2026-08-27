@@ -69,11 +69,21 @@ try {
                 'statuses' => [['status' => 'Close', 'total' => 3]],
                 'total' => 3,
             ],
+            'ticket_details' => [[
+                'complaint_segment' => 'Permohonan Refund', 'opened_at' => '2026-01-14 12:11:51',
+                'closed_at' => '2026-01-15 16:27:50', 'duration_raw' => '5:33', 'duration_minutes' => 333, 'response_time_minutes' => 1695, 'total' => 1,
+            ]],
         ],
     ]);
     assert_word_report(is_file($output) && filesize($output) > 0, 'File DOCX harus dihasilkan.');
     assert_word_report(strlen((string) $result['sha256']) === 64, 'Hash SHA-256 keluaran harus tersedia.');
     $document = read_docx_part($output, 'word/document.xml');
+    $documentText = html_entity_decode(strip_tags($document), ENT_QUOTES | ENT_XML1, 'UTF-8');
+    $documentDom = new DOMDocument();
+    assert_word_report($documentDom->loadXML($document, LIBXML_NONET), 'XML dokumen hasil harus valid.');
+    $documentXpath = new DOMXPath($documentDom);
+    $documentXpath->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
+    $documentXpath->registerNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
     assert_word_report(str_contains($document, 'LAPORAN PERFORMANSI BULANAN'), 'Judul cover harus mengikuti template.');
     assert_word_report(str_contains($document, 'PERIODE JANUARI 2026'), 'Periode cover harus menggunakan nama bulan Indonesia.');
     assert_word_report(str_contains($document, 'Jl. Contoh &amp; Aman'), 'Teks khusus harus diamankan sebagai XML.');
@@ -89,6 +99,10 @@ try {
     assert_word_report(str_contains($document, 'CHANNEL &amp; A'), 'Nama channel pada tabel harus diamankan sebagai XML.');
     assert_word_report(str_contains($document, '125.000'), 'Nominal tabel harus menggunakan format Indonesia.');
     assert_word_report(str_contains($document, 'GRAND TOTAL'), 'Tabel ringkasan harus memiliki grand total.');
+    $monthlySummaryTable = $documentXpath->query('//w:tbl[.//w:t[text()="NAMA BANK"]]')->item(0);
+    assert_word_report($monthlySummaryTable !== null && $documentXpath->query('./w:tr[1]/w:tc[1]/w:tcPr/w:vMerge[@w:val="restart"]', $monthlySummaryTable)->length === 1, 'Header NAMA BANK harus di-merge vertikal dengan baris di bawahnya.');
+    assert_word_report($monthlySummaryTable !== null && $documentXpath->query('./w:tr[2]/w:tc[1]/w:tcPr/w:vMerge[not(@w:val)]', $monthlySummaryTable)->length === 1, 'Merge vertikal NAMA BANK harus memiliki sel lanjutan yang valid.');
+    assert_word_report($monthlySummaryTable !== null && $documentXpath->query('./w:tr[1]/w:tc[2]/w:tcPr/w:gridSpan[@w:val="3"]', $monthlySummaryTable)->length === 1, 'Header periode harus di-merge horizontal sepanjang tiga kolom metrik.');
     assert_word_report(str_contains($document, 'Dokumen ini menyajikan laporan performansi biller tersebut untuk periode JANUARI 2026.'), 'Paragraf pengantar harus menghindari pengulangan nama merchant.');
     assert_word_report(str_contains($document, '10 transaksi sukses inquiry.'), 'Narasi harus memuat total inquiry sukses.');
     assert_word_report(str_contains($document, '8 transaksi sukses payment.'), 'Narasi harus memuat total payment sukses.');
@@ -103,14 +117,14 @@ try {
     assert_word_report(str_contains($document, 'sukses rate transaksi MERCHANT &lt;A&gt; adalah sebesar 80.00%'), 'Narasi success rate harus mengikuti template dan memakai hasil agregasi.');
     assert_word_report(str_contains($document, '2 transaksi gagal yang disebabkan oleh response code time out RC 82 dan RC 68'), 'Narasi grafik harus memakai total RC 68 dan RC 82.');
     assert_word_report(str_contains($document, 'TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN CHANNEL'), 'Subbab performance berdasarkan channel harus tersedia.');
-    assert_word_report((bool) preg_match('/<w:br w:type="page"\/><\/w:r><\/w:p><w:p><w:pPr><w:pStyle w:val="Heading2"\/><\/w:pPr><w:r><w:t xml:space="preserve">TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN CHANNEL/', $document), 'Judul performance berdasarkan channel harus didahului page break eksplisit.');
-    assert_word_report(str_contains($document, 'Berikut adalah jumlah transaksi berdasarkan pada channel pembayaran'), 'Teks pembuka performance channel harus mengikuti template.');
+    assert_word_report(str_contains($document, 'TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN CHANNEL'), 'Judul performance berdasarkan channel harus dipertahankan dari template.');
+    assert_word_report(str_contains($documentText, 'Berikut adalah jumlah transaksi berdasarkan pada channel pembayaran'), 'Teks pembuka performance channel harus mengikuti template.');
     assert_word_report(str_contains($document, 'Auto Deposit Mobile'), 'Tabel performance harus menampilkan payment channel hasil mapping SIC_CODE.');
     assert_word_report(str_contains($document, 'sebesar 100.00% dari keseluruhan total transaksi'), 'Narasi persentase top payment channel harus mengikuti format template.');
     assert_word_report(str_contains($document, 'Pada tabel di atas terlihat bahwa'), 'Narasi payment channel harus merujuk pada tabel, bukan grafik.');
-    assert_word_report((bool) preg_match('/<w:br w:type="page"\/><\/w:r><\/w:p><w:p><w:pPr><w:pStyle w:val="Heading2"\/><\/w:pPr><w:r><w:t xml:space="preserve">TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN TOP CHANNEL/', $document), 'Judul top channel harus dimulai pada halaman baru.');
-    assert_word_report(str_contains($document, 'Berikut adalah ratio yang membandingkan jumlah transaksi sukses payment dan transaksi gagal timeout'), 'Teks pembuka top channel harus mengikuti template.');
-    assert_word_report(str_contains($document, 'Terlihat bahwa ratio terhadap TOP pembayaran berdasarkan channel pembayaran yang digunakan adalah sebagai berikut :'), 'Teks pengantar narasi top channel harus mengikuti template.');
+    assert_word_report(str_contains($document, 'TINGKAT KEBERHASILAN TRANSAKSI BERDASARKAN TOP CHANNEL'), 'Judul top channel harus dipertahankan dari template.');
+    assert_word_report(str_contains($documentText, 'Berikut adalah ratio yang membandingkan jumlah transaksi sukses payment dan transaksi gagal timeout'), 'Teks pembuka top channel harus mengikuti template.');
+    assert_word_report(str_contains($documentText, 'Terlihat bahwa ratio terhadap TOP pembayaran berdasarkan channel pembayaran yang digunakan adalah sebagai berikut :'), 'Teks pengantar narasi top channel harus mengikuti template.');
     assert_word_report(str_contains($document, 'Jumlah transaksi pada channel Auto Deposit Mobile adalah 8 transaksi atau 100%.'), 'Narasi top channel harus memakai hasil agregasi service.');
     assert_word_report(str_contains($document, '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'), 'Narasi top channel harus menggunakan native numbering Word.');
     assert_word_report(!str_contains($document, '• Jumlah transaksi pada channel Auto Deposit Mobile'), 'Narasi top channel tidak boleh memakai karakter bullet manual.');
@@ -123,37 +137,52 @@ try {
     assert_word_report(str_contains($document, 'Pengecekan Dana sejumlah 1 tiket, dan Permohonan Refund sejumlah 2 tiket'), 'Narasi tiket harus memuat komposisi segmentasi.');
     assert_word_report(str_contains($document, 'keseluruhan tiket aduan statusnya sudah closed'), 'Narasi tiket harus menyesuaikan status keseluruhan tiket.');
     assert_word_report(str_contains($document, 'Segmentasi Keluhan') && str_contains($document, 'Total Keluhan'), 'Tabel ringkasan tiket harus mengikuti template.');
-    assert_word_report((bool) preg_match('/<w:br w:type="page"\/><\/w:r><\/w:p><w:p><w:pPr><w:pStyle w:val="Heading2"\/><\/w:pPr><w:r><w:t xml:space="preserve">LAPORAN INSIDEN/', $document), 'Judul laporan insiden harus dimulai pada halaman baru.');
+    assert_word_report(str_contains($document, 'LAPORAN INSIDEN'), 'Judul laporan insiden harus dipertahankan dari template.');
     foreach (['Tanggal Kendala', 'Kendala', 'Penyebab Kendala', 'Kategori Kendala', 'Penyelesaian', 'Durasi'] as $incidentHeader) assert_word_report(str_contains($document, $incidentHeader), "Header insiden {$incidentHeader} harus tersedia.");
     assert_word_report(str_contains($document, 'Pada bulan JANUARI 2026 diterima laporan Insiden baik dari Internal maupun Eksternal yang dapat mempengaruhi Success Rate transaksi MERCHANT &lt;A&gt;.'), 'Paragraf pembuka laporan insiden harus menyesuaikan merchant dan periode.');
+    assert_word_report(str_contains($document, 'DETAIL TIKET'), 'Bagian Detail Tiket dari template terbaru harus tersedia.');
+    foreach (['Segmentasi Keluhan', 'Open Time', 'Close Time', 'Durasi (Jam:Menit)', 'Total Keluhan'] as $ticketHeader) assert_word_report(str_contains($documentText, $ticketHeader), "Header detail tiket {$ticketHeader} harus tersedia.");
+    assert_word_report(str_contains($document, '2026-01-14 12:11:51') && str_contains($document, '2026-01-15 16:27:50'), 'Tabel detail tiket harus memakai waktu tiket dari service.');
+    assert_word_report(str_contains($document, '>28:15<'), 'Durasi detail tiket harus memakai response time Close Time dikurangi Open Time.');
+    assert_word_report(!str_contains($document, 'JANUARI 20261'), 'Nomor halaman cache Daftar Isi tidak boleh menempel pada tahun periode.');
+    assert_word_report($documentXpath->query('//w:hyperlink[.//w:instrText[contains(., "PAGEREF")]]//w:t[text()="JANUARI 2026"]')->length >= 1, 'Teks periode pada cache Daftar Isi harus tetap terpisah dari nomor halaman.');
+    $detailTicketTable = $documentXpath->query('//w:tbl[.//w:t[text()="Durasi (Jam:Menit)"]]')->item(0);
+    assert_word_report($detailTicketTable !== null && $documentXpath->query('.//w:r[not(w:rPr/w:sz[@w:val="20"] and w:rPr/w:szCs[@w:val="20"])]', $detailTicketTable)->length === 0, 'Seluruh teks tabel Detail Tiket harus berukuran 10 pt.');
+    assert_word_report(!str_contains($document, '{{'), 'Seluruh anchor template harus sudah diganti.');
+    assert_word_report($documentXpath->query('//w:body//w:shd[@w:fill="FFF2CC"]')->length === 0, 'Narasi hasil generate tidak boleh memiliki shading kuning anchor.');
+    assert_word_report($documentXpath->query('//w:p[w:pPr/w:pStyle[@w:val="Heading1" or @w:val="Heading2"]]/w:pPr/w:ind')->length === 0, 'Heading hasil generate tidak boleh memiliki indentasi langsung.');
+    assert_word_report($documentXpath->query('//w:p[.//w:drawing and w:pPr/w:jc[@w:val="center"]]')->length >= 5, 'Seluruh grafik dinamis harus rata tengah.');
+    assert_word_report($documentXpath->query('//w:fldChar[@w:fldCharType="begin" and @w:dirty]')->length === 0, 'TOC dan PAGEREF tidak boleh diperbarui sebelum Word selesai menghitung layout halaman.');
+    assert_word_report($documentXpath->query('//w:sectPr')->length >= 2, 'Dokumen harus memiliki section awal dan section laporan.');
+    assert_word_report($documentXpath->query('//w:sectPr/w:footerReference')->length >= 1, 'Section laporan harus memakai footer nomor halaman.');
+    assert_word_report($documentXpath->query('//w:sectPr/w:pgNumType[@w:start="1"]')->length === 1, 'Nomor halaman hanya boleh dimulai ulang satu kali setelah Daftar Isi.');
+    $firstSection = $documentXpath->query('//w:sectPr')->item(0);
+    assert_word_report($firstSection !== null && $documentXpath->query('./w:footerReference', $firstSection)->length === 0, 'Section cover sampai Daftar Isi tidak boleh menampilkan footer nomor halaman.');
+    assert_word_report($documentXpath->query('//w:tbl//w:p[not(w:pPr/w:spacing[@w:before="0" and @w:after="0"])]')->length === 0, 'Paragraf dalam tabel tidak boleh memiliki space before atau after.');
+    assert_word_report($documentXpath->query('//w:tbl//w:tc[w:tcPr/w:tcMar/w:top/@w:w != "0" or w:tcPr/w:tcMar/w:bottom/@w:w != "0"]')->length === 0, 'Margin vertikal seluruh sel tabel harus minimum.');
+    foreach ($documentXpath->query('//w:tbl[.//w:t[contains(., "NAMA BANK") or contains(., "CHANNEL") or contains(., "Tanggal") or contains(., "Segmentasi Keluhan") or contains(., "Tanggal Kendala")]]') as $dataTable) {
+        assert_word_report($documentXpath->query('./w:tblPr/w:jc[@w:val="center"]', $dataTable)->length === 1, 'Setiap tabel data harus rata tengah.');
+    }
+    foreach ($documentXpath->query('//w:tc[w:tcPr/w:shd[@w:fill="C00000"]]') as $headerCell) {
+        assert_word_report($documentXpath->query('.//w:rPr/w:color[@w:val="FFFFFF"]', $headerCell)->length > 0, 'Header merah harus menggunakan teks putih.');
+    }
+    assert_word_report($documentXpath->query('//w:tc[w:tcPr/w:shd[@w:fill="C00000"]]')->length >= 20, 'Semua tabel dinamis harus menggunakan header merah seperti Detail Tiket.');
     assert_word_report(str_contains($document, 'KESIMPULAN'), 'Bagian kesimpulan harus tersedia.');
     assert_word_report(str_contains($document, 'Transaksi sukses purchase MERCHANT &lt;A&gt; pada bulan JANUARI 2026 tercatat mencapai 8 transaksi payment.'), 'Kesimpulan payment sukses harus dinamis.');
     assert_word_report(str_contains($document, 'Inquiry tertinggi berjumlah 10 dari channel CHANNEL &amp; A dan purchase tertinggi berjumlah 8 transaksi dengan nominal Rp 125.000'), 'Kesimpulan channel tertinggi dan nominal harus dinamis.');
     assert_word_report(str_contains($document, 'Rata-rata transaksi MERCHANT &lt;A&gt; periode JANUARI 2026 per hari adalah 4 transaksi sukses per hari.'), 'Kesimpulan rata-rata harian harus dinamis.');
     assert_word_report(str_contains($document, 'Demikian laporan ini kami sampaikan'), 'Paragraf penutup laporan harus tersedia.');
     assert_word_report(!str_contains($document, 'w:orient="landscape"') && str_contains($document, '<w:pgSz w:w="11906" w:h="16838"/>'), 'Seluruh halaman termasuk penutup harus berorientasi portrait.');
-    assert_word_report(str_contains($document, 'Get In Touch with Us'), 'Area kontak halaman penutup harus tersedia.');
-    foreach (['@akunX', '@akunIG', '@akunFB', 'website'] as $contactLabel) assert_word_report(str_contains($document, $contactLabel), "Label kontak {$contactLabel} harus tersedia.");
-    assert_word_report(str_contains($document, 'w:top="1440" w:right="1080" w:bottom="1440" w:left="1080"'), 'Margin halaman harus memakai preset Moderate Word.');
-    $styles = read_docx_part($output, 'word/styles.xml');
-    assert_word_report(str_contains($styles, 'w:ascii="Calibri"'), 'Font isi default harus Calibri.');
-    assert_word_report(str_contains($styles, 'w:ascii="Calisto MT"'), 'Font judul dan heading harus Calisto MT.');
-    $titlePageMerchantStyle = strstr($styles, '<w:style w:type="paragraph" w:styleId="TitlePageMerchant">');
-    assert_word_report($titlePageMerchantStyle !== false && !str_contains(substr($titlePageMerchantStyle, 0, (int) strpos($titlePageMerchantStyle, '</w:style>')), '<w:ind'), 'Style nama merchant tidak boleh memiliki indentasi.');
-    assert_word_report(read_docx_part($output, 'word/media/company-logo.png') !== '', 'Logo perusahaan harus tertanam di dalam DOCX.');
-    assert_word_report(read_docx_part($output, 'word/media/summary-payment-comparison.png') !== '', 'Grafik perbandingan payment harus tertanam di dalam DOCX.');
-    assert_word_report(read_docx_part($output, 'word/media/payment-status-composition.png') !== '', 'Grafik komposisi status payment harus tertanam di dalam DOCX.');
-    assert_word_report(read_docx_part($output, 'word/media/top-payment-channels.png') !== '', 'Grafik top payment channel harus tertanam di dalam DOCX.');
-    assert_word_report(read_docx_part($output, 'word/media/daily-payment-trend.png') !== '', 'Grafik tren harian harus tertanam di dalam DOCX.');
-    assert_word_report(read_docx_part($output, 'word/media/ticket-segments.png') !== '', 'Grafik segmentasi tiket harus tertanam di dalam DOCX.');
-    foreach (['certificates.png', 'licenses.png', 'contact-x.png', 'contact-instagram.jpeg', 'contact-facebook.png', 'contact-website.png'] as $closingAsset) assert_word_report(read_docx_part($output, 'word/media/' . $closingAsset) !== '', "Aset penutup {$closingAsset} harus tertanam di dalam DOCX.");
-    assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/company-logo.png"'), 'Relasi logo DOCX harus tersedia.');
-    assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/payment-status-composition.png"'), 'Relasi grafik performance DOCX harus tersedia.');
-    assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/top-payment-channels.png"'), 'Relasi grafik top channel DOCX harus tersedia.');
-    assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/daily-payment-trend.png"'), 'Relasi grafik tren harian DOCX harus tersedia.');
-    assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/ticket-segments.png"'), 'Relasi grafik segmentasi tiket DOCX harus tersedia.');
-    assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/certificates.png"') && str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="media/licenses.png"'), 'Relasi halaman Sertifikat dan Lisensi harus tersedia.');
-    assert_word_report(str_contains(read_docx_part($output, 'word/settings.xml'), '<w:updateFields w:val="true"/>'), 'Word harus diminta memperbarui daftar isi saat dokumen dibuka.');
+    assert_word_report(str_contains($documentText, 'Get In Touch with Us'), 'Area kontak halaman penutup harus tersedia.');
+    assert_word_report(str_contains($documentText, '@finpaypromo') && str_contains($documentText, 'finpay.id'), 'Label kontak hasil koreksi template harus dipertahankan.');
+    assert_word_report(read_docx_part($output, 'word/styles.xml') === read_docx_part(__DIR__ . '/../backend/Report/templates/laporan-performansi-template.docx', 'word/styles.xml'), 'Style hasil harus dipertahankan dari template terbaru.');
+    foreach (['generated-summary-payment-comparison.png', 'generated-payment-status-composition.png', 'generated-top-payment-channels.png', 'generated-daily-payment-trend.png', 'generated-ticket-segments.png'] as $chartAsset) assert_word_report(read_docx_part($output, 'word/media/' . $chartAsset) !== '', "Grafik {$chartAsset} harus tertanam di dalam DOCX.");
+    $relationships = read_docx_part($output, 'word/_rels/document.xml.rels');
+    foreach (range(20, 24) as $relationshipId) assert_word_report(str_contains($relationships, 'Id="rId' . $relationshipId . '"'), "Relationship grafik rId{$relationshipId} harus tersedia.");
+    assert_word_report(str_contains($relationships, 'relationships/footer'), 'Relationship footer nomor halaman harus tersedia.');
+    $footer = read_docx_part($output, 'word/footer1.xml');
+    assert_word_report(str_contains($footer, '<w:jc w:val="right"/>') && str_contains($footer, ' PAGE '), 'Footer harus menampilkan field nomor halaman di kanan bawah.');
+    assert_word_report(!str_contains(read_docx_part($output, 'word/settings.xml'), '<w:updateFields'), 'Dokumen tidak boleh memicu pembaruan field prematur saat dibuka.');
     assert_word_report(str_contains(read_docx_part($output, 'word/numbering.xml'), '<w:numFmt w:val="bullet"/>'), 'Paket DOCX harus mendefinisikan native bullet list Word.');
     assert_word_report(str_contains(read_docx_part($output, 'word/numbering.xml'), '<w:rFonts w:ascii="Arial" w:hAnsi="Arial"') && str_contains(read_docx_part($output, 'word/numbering.xml'), '<w:color w:val="000000"/>'), 'Glyph bullet harus memakai font yang mendukung lingkaran hitam.');
     assert_word_report(str_contains(read_docx_part($output, 'word/_rels/document.xml.rels'), 'Target="numbering.xml"'), 'Relasi numbering Word harus tersedia.');
