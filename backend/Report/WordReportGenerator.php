@@ -198,6 +198,7 @@ final class WordReportGenerator
         if (!$document->loadXML($this->package->readPart($templatePath, 'word/document.xml'), LIBXML_NONET)) throw new RuntimeException('XML template laporan tidak valid.');
         $xpath = new \DOMXPath($document);
         $xpath->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
+        $xpath->registerNamespace('v', 'urn:schemas-microsoft-com:vml');
         $performanceTotal = $summary['performance']['totals'];
         $textValues = [
             '{{report_period}}' => $period,
@@ -240,6 +241,9 @@ final class WordReportGenerator
         }
         $this->fillTicketDetailTemplate($document, $xpath, $summary['ticket_details']);
         $this->configureTemplatePageNumbering($document, $xpath);
+        $this->configureRepeatingReportFrame($document, $xpath);
+        $this->removeEmptyParagraphsBeforeHeading($xpath, 'ADUAN DAN INSIDEN');
+        $this->ensureHeadingStartsNewPage($document, $xpath, 'ADUAN DAN INSIDEN');
         $this->disablePrematureTemplateFieldUpdates($xpath);
         $this->compactTemplateTables($document, $xpath);
         $this->removeHeadingIndentation($xpath);
@@ -253,21 +257,57 @@ final class WordReportGenerator
     {
         foreach ($xpath->query('//w:p') as $paragraph) {
             $textNodes = $xpath->query('.//w:t', $paragraph);
-            if ($xpath->query('.//w:fldChar | .//w:instrText', $paragraph)->length > 0) {
-                foreach ($textNodes as $textNode) {
-                    $replacedNodeText = str_replace(array_keys($values), array_values($values), $textNode->textContent);
-                    if ($replacedNodeText !== $textNode->textContent) $this->setTemplateTextNode($textNode, $replacedNodeText);
-                }
-                continue;
+            if ($textNodes->length === 0) continue;
+            $changed = false;
+            foreach ($values as $placeholder => $replacement) {
+                while ($this->replaceSplitTemplatePlaceholder($textNodes, (string) $placeholder, (string) $replacement)) $changed = true;
             }
-            $combined = '';
-            foreach ($textNodes as $textNode) $combined .= $textNode->textContent;
-            $replaced = str_replace(array_keys($values), array_values($values), $combined);
-            if ($combined === $replaced || $textNodes->length === 0) continue;
-            $this->setTemplateTextNode($textNodes->item(0), $replaced);
-            for ($index = 1; $index < $textNodes->length; $index++) $this->setTemplateTextNode($textNodes->item($index), '');
+            if (!$changed) continue;
             foreach (iterator_to_array($xpath->query('./w:pPr/w:shd | .//w:rPr/w:shd', $paragraph)) as $shading) $shading->parentNode?->removeChild($shading);
         }
+    }
+
+    /** Mengganti satu placeholder lintas text run tanpa menggabungkan hasil field TOC dan nomor halamannya. */
+    private function replaceSplitTemplatePlaceholder(\DOMNodeList $textNodes, string $placeholder, string $replacement): bool
+    {
+        if ($placeholder === '') return false;
+        $combined = '';
+        foreach ($textNodes as $textNode) $combined .= $textNode->textContent;
+        $position = strpos($combined, $placeholder);
+        if ($position === false) return false;
+
+        $endPosition = $position + strlen($placeholder);
+        $cursor = 0;
+        $startIndex = null;
+        $endIndex = null;
+        $startOffset = 0;
+        $endOffset = 0;
+        foreach ($textNodes as $index => $textNode) {
+            $length = strlen($textNode->textContent);
+            if ($startIndex === null && $position >= $cursor && $position < $cursor + $length) {
+                $startIndex = $index;
+                $startOffset = $position - $cursor;
+            }
+            if ($endPosition > $cursor && $endPosition <= $cursor + $length) {
+                $endIndex = $index;
+                $endOffset = $endPosition - $cursor;
+                break;
+            }
+            $cursor += $length;
+        }
+        if ($startIndex === null || $endIndex === null) throw new RuntimeException('Posisi placeholder template tidak dapat dipetakan ke text run Word.');
+
+        $startNode = $textNodes->item($startIndex);
+        $endNode = $textNodes->item($endIndex);
+        if ($startNode === $endNode) {
+            $value = substr($startNode->textContent, 0, $startOffset) . $replacement . substr($startNode->textContent, $endOffset);
+            $this->setTemplateTextNode($startNode, $value);
+            return true;
+        }
+        $this->setTemplateTextNode($startNode, substr($startNode->textContent, 0, $startOffset) . $replacement);
+        for ($index = $startIndex + 1; $index < $endIndex; $index++) $this->setTemplateTextNode($textNodes->item($index), '');
+        $this->setTemplateTextNode($endNode, substr($endNode->textContent, $endOffset));
+        return true;
     }
 
     /** Memusatkan tabel dan paragraf gambar yang menggantikan anchor layout. */
@@ -344,6 +384,62 @@ final class WordReportGenerator
         $pageNumber->setAttributeNS($namespace, 'w:start', '1');
         $columns = $xpath->query('./w:cols', $finalSection)->item(0);
         if ($columns !== null) $finalSection->insertBefore($pageNumber, $columns); else $finalSection->appendChild($pageNumber);
+    }
+
+    /** Memindahkan bingkai merah section laporan ke header berulang dan mengecualikan section halaman terakhir. */
+    private function configureRepeatingReportFrame(\DOMDocument $document, \DOMXPath $xpath): void
+    {
+        $sections = $xpath->query('//w:sectPr');
+        if ($sections->length < 3) throw new RuntimeException('Template harus memiliki section laporan dan section halaman terakhir yang terpisah.');
+        foreach (iterator_to_array($xpath->query('/w:document/w:body/*[preceding-sibling::w:p/w:pPr/w:sectPr and following-sibling::w:p/w:pPr/w:sectPr]//w:pict[v:rect]')) as $picture) {
+            $picture->parentNode?->removeChild($picture);
+        }
+
+        $wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        $relationshipNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+        foreach ([[1, 'rId26'], [2, 'rId27']] as [$sectionIndex, $relationshipId]) {
+            $section = $sections->item($sectionIndex);
+            foreach (iterator_to_array($xpath->query('./w:headerReference[@w:type="default"]', $section)) as $reference) $reference->parentNode?->removeChild($reference);
+            $header = $document->createElementNS($wordNamespace, 'w:headerReference');
+            $header->setAttributeNS($wordNamespace, 'w:type', 'default');
+            $header->setAttributeNS($relationshipNamespace, 'r:id', $relationshipId);
+            $section->insertBefore($header, $section->firstChild);
+        }
+    }
+
+    /** Menghapus paragraf kosong sisa anchor tepat sebelum heading agar tidak menciptakan ruang vertikal palsu. */
+    private function removeEmptyParagraphsBeforeHeading(\DOMXPath $xpath, string $heading): void
+    {
+        foreach ($xpath->query('/w:document/w:body/w:p[normalize-space(string(.))="' . $heading . '"]') as $paragraph) {
+            $previous = $paragraph->previousSibling;
+            while ($previous !== null) {
+                $candidate = $previous;
+                $previous = $previous->previousSibling;
+                if (!$candidate instanceof \DOMElement) continue;
+                if ($candidate->localName !== 'p') break;
+                $hasContent = trim($candidate->textContent) !== ''
+                    || $xpath->query('.//w:br | .//w:drawing | .//w:pict | ./w:pPr/w:sectPr', $candidate)->length > 0;
+                if ($hasContent) break;
+                $candidate->parentNode?->removeChild($candidate);
+            }
+        }
+    }
+
+    /** Memastikan heading dimulai pada halaman baru tanpa menambahkan paragraf kosong sebelum judul. */
+    private function ensureHeadingStartsNewPage(\DOMDocument $document, \DOMXPath $xpath, string $heading): void
+    {
+        $namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        foreach ($xpath->query('/w:document/w:body/w:p[normalize-space(string(.))="' . $heading . '"]') as $paragraph) {
+            $properties = $xpath->query('./w:pPr', $paragraph)->item(0);
+            if (!$properties instanceof \DOMElement) {
+                $properties = $document->createElementNS($namespace, 'w:pPr');
+                $paragraph->insertBefore($properties, $paragraph->firstChild);
+            }
+            if ($xpath->query('./w:pageBreakBefore', $properties)->length === 0) {
+                $pageBreak = $document->createElementNS($namespace, 'w:pageBreakBefore');
+                $properties->appendChild($pageBreak);
+            }
+        }
     }
 
     /** Menghapus jarak paragraf dan margin vertikal pada seluruh sel agar tabel tetap ringkas. */

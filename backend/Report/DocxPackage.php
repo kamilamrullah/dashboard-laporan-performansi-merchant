@@ -61,6 +61,25 @@ final class DocxPackage
                         if (!$archive->addFromString('[Content_Types].xml', $contentTypesXml)) throw new RuntimeException('Content type footer gagal ditambahkan.');
                     }
                 }
+                if (str_contains($documentXml, 'rId26') || str_contains($documentXml, 'rId27')) {
+                    foreach (['rId26', 'rId27'] as $headerRelationshipId) {
+                        if (str_contains($relationshipXml, 'Id="' . $headerRelationshipId . '"')) throw new RuntimeException('Relationship header bingkai bertabrakan dengan relationship yang sudah ada.');
+                    }
+                    $relationshipXml = str_replace('</Relationships>',
+                        '<Relationship Id="rId26" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="generated-report-frame.xml"/>'
+                        . '<Relationship Id="rId27" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="generated-blank-header.xml"/>'
+                        . '</Relationships>', $relationshipXml);
+                    if (!$archive->addFromString('word/generated-report-frame.xml', $this->reportFrameHeader())) throw new RuntimeException('Header bingkai laporan gagal ditambahkan.');
+                    if (!$archive->addFromString('word/generated-blank-header.xml', $this->blankHeader())) throw new RuntimeException('Header kosong halaman terakhir gagal ditambahkan.');
+                    $contentTypesXml = $archive->getFromName('[Content_Types].xml');
+                    if ($contentTypesXml === false) throw new RuntimeException('Content type template laporan tidak tersedia.');
+                    foreach (['generated-report-frame.xml', 'generated-blank-header.xml'] as $headerPart) {
+                        if (!str_contains($contentTypesXml, 'PartName="/word/' . $headerPart . '"')) {
+                            $contentTypesXml = str_replace('</Types>', '<Override PartName="/word/' . $headerPart . '" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>', $contentTypesXml);
+                        }
+                    }
+                    if (!$archive->addFromString('[Content_Types].xml', $contentTypesXml)) throw new RuntimeException('Content type header bingkai gagal disimpan.');
+                }
                 if (!$archive->addFromString('word/_rels/document.xml.rels', $relationshipXml)) throw new RuntimeException('Relationship grafik atau footer laporan gagal diperbarui.');
                 $settingsXml = $archive->getFromName('word/settings.xml');
                 if ($settingsXml === false) throw new RuntimeException('Pengaturan template laporan tidak tersedia.');
@@ -76,6 +95,22 @@ final class DocxPackage
         } finally {
             if (is_file($temporaryPath)) unlink($temporaryPath);
         }
+    }
+
+    /** Membentuk header berulang berisi bingkai merah pada setiap halaman section laporan. */
+    private function reportFrameHeader(): string
+    {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w10="urn:schemas-microsoft-com:office:word">'
+            . '<w:p><w:r><w:pict><v:rect id="GeneratedReportFrame" style="position:absolute;margin-left:-33.85pt;margin-top:53.75pt;width:554.4pt;height:734.4pt;z-index:-251700000;visibility:visible;mso-wrap-style:square;mso-wrap-distance-left:0;mso-wrap-distance-top:0;mso-wrap-distance-right:0;mso-wrap-distance-bottom:0;mso-position-horizontal-relative:text;mso-position-vertical-relative:page;v-text-anchor:top" filled="f" strokecolor="#c00000" strokeweight="1.5pt"><v:shadow color="black" opacity="22938f" offset="0"/><w10:wrap anchory="page"/></v:rect></w:pict></w:r></w:p>'
+            . '</w:hdr>';
+    }
+
+    /** Membentuk header kosong agar halaman terakhir tidak mewarisi bingkai section laporan. */
+    private function blankHeader(): string
+    {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p/></w:hdr>';
     }
 
     /** Menulis bagian-bagian XML dokumen ke file DOCX secara atomik. */

@@ -180,6 +180,14 @@ try {
     $relationships = read_docx_part($output, 'word/_rels/document.xml.rels');
     foreach (range(20, 24) as $relationshipId) assert_word_report(str_contains($relationships, 'Id="rId' . $relationshipId . '"'), "Relationship grafik rId{$relationshipId} harus tersedia.");
     assert_word_report(str_contains($relationships, 'relationships/footer'), 'Relationship footer nomor halaman harus tersedia.');
+    assert_word_report(str_contains($relationships, 'Id="rId26"') && str_contains($relationships, 'Target="generated-report-frame.xml"'), 'Section laporan harus memakai header bingkai merah berulang.');
+    assert_word_report(str_contains($relationships, 'Id="rId27"') && str_contains($relationships, 'Target="generated-blank-header.xml"'), 'Section halaman terakhir harus memakai header kosong.');
+    assert_word_report(str_contains(read_docx_part($output, 'word/generated-report-frame.xml'), 'GeneratedReportFrame') && str_contains(read_docx_part($output, 'word/generated-report-frame.xml'), 'strokecolor="#c00000"'), 'Header laporan harus memuat kotak merah.');
+    assert_word_report(!str_contains(read_docx_part($output, 'word/generated-blank-header.xml'), '<v:rect'), 'Header halaman terakhir tidak boleh memiliki kotak merah.');
+    assert_word_report($documentXpath->query('(//w:sectPr)[2]/w:headerReference[@w:type="default" and @r:id="rId26"]')->length === 1, 'Bingkai berulang harus diterapkan pada section isi laporan.');
+    assert_word_report($documentXpath->query('(//w:sectPr)[3]/w:headerReference[@w:type="default" and @r:id="rId27"]')->length === 1, 'Section terakhir harus memutus pewarisan header bingkai.');
+    assert_word_report($documentXpath->query('//w:p[normalize-space(string(.))="ADUAN DAN INSIDEN"]/preceding-sibling::*[1][self::w:p and not(normalize-space(string(.))) and not(.//w:br or .//w:drawing or .//w:pict or ./w:pPr/w:sectPr)]')->length === 0, 'Heading ADUAN DAN INSIDEN tidak boleh didahului paragraf kosong sisa anchor.');
+    assert_word_report($documentXpath->query('//w:p[normalize-space(string(.))="ADUAN DAN INSIDEN"]/w:pPr/w:pageBreakBefore')->length === 1, 'Heading ADUAN DAN INSIDEN harus dimulai pada halaman baru tanpa paragraf kosong tambahan.');
     $footer = read_docx_part($output, 'word/footer1.xml');
     assert_word_report(str_contains($footer, '<w:jc w:val="right"/>') && str_contains($footer, ' PAGE '), 'Footer harus menampilkan field nomor halaman di kanan bawah.');
     assert_word_report(!str_contains(read_docx_part($output, 'word/settings.xml'), '<w:updateFields'), 'Dokumen tidak boleh memicu pembaruan field prematur saat dibuka.');
