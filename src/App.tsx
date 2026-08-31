@@ -22,7 +22,7 @@ import { AuthContext } from './auth/AuthContext';
 import type { DashboardData, DashboardFiltersState } from './types';
 
 type ActiveModal = 'transactions' | 'tickets' | 'report' | 'payment-channels' | null;
-const initialFilters: DashboardFiltersState = { dateFrom: '', dateTo: '', merchantId: '', partnerChannel: '', paymentChannel: '', transactionType: '', responseCode: '' };
+const initialFilters: DashboardFiltersState = { period: '', merchantId: '', partnerChannel: '', paymentChannel: '', transactionType: '', responseCode: '' };
 
 // Menyediakan penanda Rupiah karena Lucide tidak memiliki simbol mata uang Indonesia.
 const RupiahIcon = ((props: LucideProps) => <span className={`${props.className ?? ''} flex items-center justify-center text-[11px] font-extrabold`}>Rp</span>) as LucideIcon;
@@ -54,10 +54,9 @@ export default function App() {
 }
 
 // Menentukan rentang bulan terbaru yang benar-benar tersedia di database.
-function latestAvailableMonth(dateFrom: string | null, dateTo: string | null): Pick<DashboardFiltersState, 'dateFrom' | 'dateTo'> | null {
+function latestAvailableMonth(dateFrom: string | null, dateTo: string | null): Pick<DashboardFiltersState, 'period'> | null {
   if (!dateFrom || !dateTo) return null;
-  const monthStart = `${dateTo.slice(0, 7)}-01`;
-  return { dateFrom: monthStart < dateFrom ? dateFrom : monthStart, dateTo };
+  return { period: dateTo.slice(0, 7) };
 }
 
 // Memformat rentang periode API menjadi label Indonesia.
@@ -71,22 +70,35 @@ interface DashboardViewProps { data: DashboardData; filters: DashboardFiltersSta
 
 // Merender seluruh metrik laporan dan visual dari response database yang sama.
 function DashboardView({ data, filters, isRefreshing, onFilterChange, onReset, onRefresh }: DashboardViewProps) {
+  const [drilldownPeriod, setDrilldownPeriod] = useState<string | null>(null);
   const inquiry = Number(data.summary.total_inquiry);
   const payment = Number(data.summary.total_payment);
   const ratio = inquiry > 0 ? (payment / inquiry) * 100 : 0;
+  // Menutup detail harian ketika pengguna memilih periode global yang berbeda secara manual.
+  const changeFilters = (nextFilters: DashboardFiltersState) => {
+    if (nextFilters.period !== filters.period) setDrilldownPeriod(null);
+    onFilterChange(nextFilters);
+  };
+  // Menyamakan periode global dan mode detail ketika suatu bulan pada chart diklik.
+  const selectTrendMonth = (period: string) => {
+    setDrilldownPeriod(period);
+    onFilterChange({ ...filters, period });
+  };
+  // Mengembalikan seluruh filter sekaligus menutup mode detail harian.
+  const resetDashboard = () => { setDrilldownPeriod(null); onReset(); };
   return <>
     <div className="mb-6 flex flex-col justify-between gap-3 rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-sky-50 p-5 sm:flex-row sm:items-center">
       <div><div className="flex flex-wrap items-center gap-2"><span className="rounded-md bg-emerald-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700">Database aktif</span><span className="text-[10px] text-slate-400">{data.summary.aggregate_rows} baris agregat</span></div><h2 className="mt-3 text-lg font-bold text-slate-900">Ikhtisar {formatPeriod(data.summary.period_start, data.summary.period_end)}</h2><p className="mt-1 text-xs text-slate-500">Metrik laporan menggunakan transaksi yang diklasifikasikan sukses.</p></div>
       <button onClick={onRefresh} disabled={isRefreshing} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />Muat ulang</button>
     </div>
-    <DashboardFilters filters={filters} options={data.options} onChange={onFilterChange} onReset={onReset} />
+    <DashboardFilters filters={filters} options={data.options} onChange={changeFilters} onReset={resetDashboard} />
     <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <MetricCard label="Inquiry Sukses" value={formatNumber(data.summary.total_inquiry)} note="TYPE INQUIRY dengan RC sukses" icon={Activity} tone="indigo" />
       <MetricCard label="Payment Sukses" value={formatNumber(data.summary.total_payment)} note="TYPE PAYMENT dengan RC sukses" icon={CheckCircle2} tone="emerald" delay="60ms" />
       <MetricCard label="Nominal Payment Sukses" value={formatCurrency(data.summary.payment_amount)} note="nominal PAYMENT dengan RC sukses" icon={RupiahIcon} tone="sky" delay="120ms" />
       <MetricCard label="Payment / Inquiry" value={`${ratio.toLocaleString('id-ID', { maximumFractionDigits: 2 })}%`} note="rasio transaksi sukses" icon={Gauge} tone="amber" delay="180ms" />
     </div>
-    <div className="mb-6 grid gap-6 lg:grid-cols-3"><PerformanceChart data={data.daily} /><TransactionStatusChart data={data.response_codes} /></div>
+    <div className="mb-6 grid gap-6 lg:grid-cols-3"><PerformanceChart filters={filters} drilldownPeriod={drilldownPeriod} onMonthSelect={selectTrendMonth} onBack={() => setDrilldownPeriod(null)} /><TransactionStatusChart data={data.response_codes} /></div>
     <ChannelTable data={data.partners} />
     <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-sm font-bold text-slate-900">Payment Channel Terfilter</h2><div className="mt-4 flex flex-wrap gap-3">{data.payment_channels.map((item) => <div key={item.sic_code} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">SIC {item.sic_code}</p><p className="mt-1 text-xs font-bold text-slate-800">{item.name}</p><p className="mt-2 text-[11px] text-slate-500">{formatNumber(item.total_trx)} transaksi sukses</p></div>)}{data.payment_channels.length === 0 && <p className="text-xs text-slate-400">Tidak ada data.</p>}</div></section>
   </>;

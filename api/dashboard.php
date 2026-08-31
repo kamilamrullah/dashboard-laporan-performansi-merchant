@@ -19,6 +19,19 @@ function date_parameter(string $name): ?string
     return $date->format('Y-m-d');
 }
 
+/** Memvalidasi periode bulanan YYYY-MM dan mengembalikan null ketika belum diberikan. */
+function month_parameter(string $name): ?DateTimeImmutable
+{
+    $value = trim((string) ($_GET[$name] ?? ''));
+    if ($value === '') return null;
+    $period = DateTimeImmutable::createFromFormat('!Y-m', $value);
+    $errors = DateTimeImmutable::getLastErrors();
+    if (!$period || $period->format('Y-m') !== $value || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+        json_response(['error' => "Parameter {$name} harus berformat YYYY-MM."], 422);
+    }
+    return $period;
+}
+
 /** Memvalidasi parameter filter teks agar panjang dan bentuk input tetap terkendali. */
 function text_parameter(string $name, int $maxLength = 160): ?string
 {
@@ -32,13 +45,25 @@ function text_parameter(string $name, int $maxLength = 160): ?string
     return $value;
 }
 
-/** Menyusun kondisi SQL dashboard beserta parameter prepared statement-nya. */
-function dashboard_filters(): array
+/** Menyusun kondisi SQL dashboard dan memakai bulan terbaru ketika request awal belum memiliki periode. */
+function dashboard_filters(array $availablePeriod): array
 {
     $conditions = [];
     $parameters = [];
+    $period = month_parameter('period');
     $dateFrom = date_parameter('date_from');
     $dateTo = date_parameter('date_to');
+    if ($period !== null && ($dateFrom !== null || $dateTo !== null)) json_response(['error' => 'Gunakan period atau filter tanggal lama, bukan keduanya.'], 422);
+    if ($period !== null) {
+        $dateFrom = $period->format('Y-m-01');
+        $dateTo = $period->modify('last day of this month')->format('Y-m-d');
+    } elseif ($dateFrom === null && $dateTo === null && !empty($availablePeriod['date_to'])) {
+        $latestDate = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $availablePeriod['date_to']);
+        if (!$latestDate) throw new RuntimeException('Periode terbaru dashboard tidak valid.');
+        $dateFrom = $latestDate->modify('first day of this month')->format('Y-m-d');
+        if (!empty($availablePeriod['date_from']) && $dateFrom < (string) $availablePeriod['date_from']) $dateFrom = (string) $availablePeriod['date_from'];
+        $dateTo = $latestDate->format('Y-m-d');
+    }
     if ($dateFrom !== null) { $conditions[] = 't.transaction_date >= :date_from'; $parameters['date_from'] = $dateFrom; }
     if ($dateTo !== null) { $conditions[] = 't.transaction_date <= :date_to'; $parameters['date_to'] = $dateTo; }
     if ($dateFrom !== null && $dateTo !== null && $dateFrom > $dateTo) {
@@ -55,7 +80,7 @@ function dashboard_filters(): array
         $value = text_parameter($field);
         if ($value === null) continue;
         $column = match ($field) {
-            'partner_channel' => 't.partner_channel', 'payment_channel' => "COALESCE(pc.channel_name, t.sic_code)",
+            'partner_channel' => 't.partner_channel', 'payment_channel' => "COALESCE(pc.channel_name, CONCAT('SIC ', t.sic_code))",
             'transaction_type' => 't.transaction_type', 'response_code' => 't.response_code',
         };
         $conditions[] = "{$column} = :{$field}";
@@ -81,10 +106,28 @@ function fetch_one(PDO $database, string $sql, array $parameters = []): array
     return $result === false ? [] : $result;
 }
 
+/** Membuat snapshot terfilter per request agar klasifikasi sukses hanya dihitung satu kali untuk seluruh widget. */
+function create_dashboard_snapshot(PDO $database, string $where, array $parameters, string $successCondition): void
+{
+    $database->exec('DROP TEMPORARY TABLE IF EXISTS dashboard_filtered_transactions');
+    $statement = $database->prepare(
+        "CREATE TEMPORARY TABLE dashboard_filtered_transactions ENGINE=InnoDB AS
+         SELECT t.transaction_date, t.transaction_type, t.partner_channel, t.sic_code, t.response_code,
+                t.total_trx, t.total_amount,
+                COALESCE(pc.channel_name, CONCAT('SIC ', t.sic_code)) payment_channel_name,
+                CASE WHEN {$successCondition} THEN 1 ELSE 0 END is_success
+         FROM transaction_aggregates t
+         LEFT JOIN payment_channels pc ON pc.sic_code = t.sic_code
+         WHERE {$where}"
+    );
+    $statement->execute($parameters);
+}
+
 try {
+    $startedAt = microtime(true);
     [$database] = authorize_api_request(['super_admin', 'admin', 'viewer']);
-    [$where, $parameters] = dashboard_filters();
-    $join = ' FROM transaction_aggregates t JOIN merchants m ON m.id = t.merchant_id LEFT JOIN payment_channels pc ON pc.sic_code = t.sic_code ';
+    $availablePeriod = fetch_one($database, 'SELECT MIN(transaction_date) date_from, MAX(transaction_date) date_to FROM transaction_aggregates');
+    [$where, $parameters] = dashboard_filters($availablePeriod);
     $successCondition = "EXISTS (
         SELECT 1 FROM response_code_rules rules
         WHERE rules.response_code = t.response_code
@@ -94,6 +137,9 @@ try {
           AND rules.effective_from <= t.transaction_date
           AND (rules.effective_until IS NULL OR rules.effective_until >= t.transaction_date)
     )";
+    create_dashboard_snapshot($database, $where, $parameters, $successCondition);
+    $join = ' FROM dashboard_filtered_transactions t ';
+    $successCondition = 't.is_success = 1';
 
     $summary = fetch_one($database,
         "SELECT COALESCE(SUM(t.total_trx), 0) total_trx,
@@ -101,14 +147,14 @@ try {
                 COALESCE(SUM(CASE WHEN t.transaction_type = 'PAYMENT' AND {$successCondition} THEN t.total_trx ELSE 0 END), 0) total_payment,
                 COALESCE(SUM(CASE WHEN t.transaction_type = 'PAYMENT' AND {$successCondition} THEN t.total_amount ELSE 0 END), 0) payment_amount,
                 COUNT(*) aggregate_rows, MIN(t.transaction_date) period_start, MAX(t.transaction_date) period_end
-         {$join} WHERE {$where}", $parameters);
+         {$join}");
 
     $daily = fetch_all($database,
         "SELECT DATE_FORMAT(t.transaction_date, '%Y-%m-%d') transaction_date,
                 SUM(CASE WHEN t.transaction_type = 'INQUIRY' AND {$successCondition} THEN t.total_trx ELSE 0 END) inquiry,
                 SUM(CASE WHEN t.transaction_type = 'PAYMENT' AND {$successCondition} THEN t.total_trx ELSE 0 END) payment,
                 SUM(CASE WHEN t.transaction_type = 'PAYMENT' AND {$successCondition} THEN t.total_amount ELSE 0 END) payment_amount
-         {$join} WHERE {$where} GROUP BY t.transaction_date ORDER BY t.transaction_date", $parameters);
+         {$join} GROUP BY t.transaction_date ORDER BY t.transaction_date");
 
     $partners = fetch_all($database,
         "SELECT t.partner_channel name,
@@ -116,19 +162,19 @@ try {
                 SUM(CASE WHEN t.transaction_type = 'INQUIRY' AND {$successCondition} THEN t.total_trx ELSE 0 END) inquiry,
                 SUM(CASE WHEN t.transaction_type = 'PAYMENT' AND {$successCondition} THEN t.total_trx ELSE 0 END) payment,
                 SUM(CASE WHEN t.transaction_type = 'PAYMENT' AND {$successCondition} THEN t.total_amount ELSE 0 END) payment_amount
-         {$join} WHERE {$where} GROUP BY t.partner_channel ORDER BY total_trx DESC, name ASC LIMIT 15", $parameters);
+         {$join} GROUP BY t.partner_channel ORDER BY total_trx DESC, name ASC LIMIT 15");
 
     $paymentChannels = fetch_all($database,
-        "SELECT t.sic_code, COALESCE(pc.channel_name, CONCAT('SIC ', t.sic_code)) name,
+        "SELECT t.sic_code, t.payment_channel_name name,
                 SUM(CASE WHEN {$successCondition} THEN t.total_trx ELSE 0 END) total_trx,
                 SUM(CASE WHEN {$successCondition} THEN t.total_amount ELSE 0 END) total_amount
-         {$join} WHERE {$where} GROUP BY t.sic_code, pc.channel_name ORDER BY total_trx DESC, name ASC LIMIT 15", $parameters);
+         {$join} GROUP BY t.sic_code, t.payment_channel_name ORDER BY total_trx DESC, name ASC LIMIT 15");
 
     $responseCodes = fetch_all($database,
         "SELECT t.response_code code, SUM(t.total_trx) total_trx,
                 SUM(CASE WHEN t.transaction_type = 'INQUIRY' THEN t.total_trx ELSE 0 END) inquiry,
                 SUM(CASE WHEN t.transaction_type = 'PAYMENT' THEN t.total_trx ELSE 0 END) payment
-         {$join} WHERE {$where} GROUP BY t.response_code ORDER BY total_trx DESC, code ASC", $parameters);
+         {$join} GROUP BY t.response_code ORDER BY total_trx DESC, code ASC");
 
     $options = [
         'merchants' => fetch_all($database, 'SELECT id, merchant_code, merchant_name FROM merchants WHERE is_active = 1 ORDER BY merchant_name'),
@@ -136,9 +182,11 @@ try {
         'payment_channels' => array_column(fetch_all($database, "SELECT DISTINCT COALESCE(pc.channel_name, CONCAT('SIC ', t.sic_code)) value FROM transaction_aggregates t LEFT JOIN payment_channels pc ON pc.sic_code = t.sic_code ORDER BY value"), 'value'),
         'transaction_types' => array_column(fetch_all($database, 'SELECT DISTINCT transaction_type value FROM transaction_aggregates ORDER BY transaction_type'), 'value'),
         'response_codes' => array_column(fetch_all($database, 'SELECT DISTINCT response_code value FROM transaction_aggregates ORDER BY response_code'), 'value'),
-        'available_period' => fetch_one($database, 'SELECT MIN(transaction_date) date_from, MAX(transaction_date) date_to FROM transaction_aggregates'),
+        'periods' => fetch_all($database, "SELECT DATE_FORMAT(transaction_date, '%Y-%m') value, MIN(transaction_date) date_from, MAX(transaction_date) date_to FROM transaction_aggregates GROUP BY DATE_FORMAT(transaction_date, '%Y-%m') ORDER BY value DESC"),
+        'available_period' => $availablePeriod,
     ];
 
+    header('Server-Timing: dashboard;dur=' . number_format((microtime(true) - $startedAt) * 1000, 1, '.', ''));
     json_response(['summary' => $summary, 'daily' => $daily, 'partners' => $partners, 'payment_channels' => $paymentChannels, 'response_codes' => $responseCodes, 'options' => $options]);
 } catch (Throwable $error) {
     error_log($error->getMessage());

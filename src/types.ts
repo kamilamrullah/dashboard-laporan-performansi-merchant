@@ -1,6 +1,5 @@
 export interface DashboardFiltersState {
-  dateFrom: string;
-  dateTo: string;
+  period: string;
   merchantId: string;
   partnerChannel: string;
   paymentChannel: string;
@@ -19,6 +18,7 @@ export interface DashboardSummary {
 }
 
 export interface DailyPerformance { transaction_date: string; inquiry: string; payment: string; payment_amount: string; }
+export interface MonthlyPerformance { period: string; inquiry: string | null; payment: string | null; payment_amount: string | null; has_data: boolean; }
 export interface PartnerPerformance { name: string; total_trx: string; inquiry: string; payment: string; payment_amount: string; }
 export interface PaymentChannelPerformance { sic_code: string; name: string; total_trx: string; total_amount: string; }
 export interface ResponseCodePerformance { code: string; total_trx: string; inquiry: string; payment: string; }
@@ -30,7 +30,15 @@ export interface DashboardOptions {
   payment_channels: string[];
   transaction_types: string[];
   response_codes: string[];
+  periods: Array<{ value: string; date_from: string; date_to: string }>;
   available_period: { date_from: string | null; date_to: string | null };
+}
+
+export interface DashboardTrendData {
+  granularity: 'monthly' | 'daily';
+  selected_period: string;
+  range: { date_from: string; date_to: string };
+  rows: MonthlyPerformance[] | DailyPerformance[];
 }
 
 export interface DashboardData {

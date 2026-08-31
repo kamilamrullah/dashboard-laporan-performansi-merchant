@@ -13,7 +13,8 @@
     "test:ticket-import": "C:\\xampp\\php\\php.exe tests/TicketImporterIntegrationTest.php",
     "test:report": "C:\\xampp\\php\\php.exe tests/WordReportGeneratorTest.php",
     "test:report-summary": "C:\\xampp\\php\\php.exe tests/ReportSummaryServiceIntegrationTest.php",
-    "test:backend": "npm run test:import && npm run test:ticket-reader && npm run test:ticket-import && npm run test:auth && npm run test:report-summary && npm run test:report",
+    "test:dashboard": "C:\\xampp\\php\\php.exe tests/DashboardTrendServiceIntegrationTest.php",
+    "test:backend": "npm run test:import && npm run test:ticket-reader && npm run test:ticket-import && npm run test:auth && npm run test:dashboard && npm run test:report-summary && npm run test:report",
     "preview": "vite preview"
   },
   "dependencies": {
